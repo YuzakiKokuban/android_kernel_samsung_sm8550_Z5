@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * FIVE State machine
  *
@@ -14,12 +15,13 @@
  * GNU General Public License for more details.
  */
 
-#include <linux/task_integrity.h>
+#include <linux/sched.h>
+
+#include "task_integrity.h"
 #include "five_audit.h"
 #include "five_state.h"
 #include "five_hooks.h"
 #include "five_cache.h"
-#include "five_dsms.h"
 
 enum task_integrity_state_cause {
 	STATE_CAUSE_UNKNOWN,
@@ -81,6 +83,75 @@ static const char *task_integrity_state_str(
 	return str;
 }
 
+const char *task_integrity_reset_str(
+		enum task_integrity_reset_cause cause)
+{
+	const char *str = NULL;
+
+	switch (cause) {
+	case CAUSE_TAMPERED:
+		str = "tampered";
+		break;
+	case CAUSE_NO_CERT:
+		str = "nocert";
+		break;
+	case CAUSE_MISMATCH_LABEL:
+		str = "mismatch_label";
+		break;
+	case CAUSE_UNSET:
+		str = "unset";
+		break;
+	case CAUSE_BAD_FS:
+		str = "bad_fs";
+		break;
+	case CAUSE_INVALID_HASH_LENGTH:
+		str = "invalid_hash_len";
+		break;
+	case CAUSE_INVALID_HEADER:
+		str = "invalid_header";
+		break;
+	case CAUSE_CALC_HASH_FAILED:
+		str = "calc_hash_failed";
+		break;
+	case CAUSE_INVALID_LABEL_DATA:
+		str = "invalid_label_data";
+		break;
+	case CAUSE_INVALID_SIGNATURE_DATA:
+		str = "invalid_sign_data";
+		break;
+	case CAUSE_INVALID_HASH:
+		str = "invalid_hash";
+		break;
+	case CAUSE_INVALID_CALC_CERT_HASH:
+		str = "invalid_calc_cert_hash";
+		break;
+	case CAUSE_INVALID_UPDATE_LABEL:
+		str = "invalid_update_label";
+		break;
+	case CAUSE_INVALID_SIGNATURE:
+		str = "invalid_signature";
+		break;
+	case CAUSE_UKNOWN_FIVE_DATA:
+		str = "unknown_five_data";
+		break;
+	case CAUSE_PTRACE:
+		str = "ptrace";
+		break;
+	case CAUSE_VMRW:
+		str = "vmrw";
+		break;
+	case CAUSE_EXEC:
+		str = "exec";
+		break;
+	default:
+		str = "reset_integrity";
+		break;
+	}
+	return str;
+}
+EXPORT_SYMBOL_GPL(task_integrity_reset_str);
+
+
 static enum task_integrity_reset_cause state_to_reason_cause(
 		enum task_integrity_state_cause cause)
 {
@@ -123,7 +194,7 @@ static inline int integrity_label_cmp(struct integrity_label *l1,
 }
 
 static int verify_or_update_label(struct task_integrity *intg,
-		struct integrity_iint_cache *iint)
+		struct five_iint_cache *iint)
 {
 	struct integrity_label *l;
 	struct integrity_label *file_label = iint->five_label;
@@ -164,7 +235,7 @@ out:
 	return rc;
 }
 
-static bool set_first_state(struct integrity_iint_cache *iint,
+static bool set_first_state(struct five_iint_cache *iint,
 				struct task_integrity *integrity,
 				struct task_verification_result *result)
 {
@@ -223,7 +294,7 @@ static bool set_first_state(struct integrity_iint_cache *iint,
 	return true;
 }
 
-static bool set_next_state(struct integrity_iint_cache *iint,
+static bool set_next_state(struct five_iint_cache *iint,
 			   struct task_integrity *integrity,
 			   struct task_verification_result *result)
 {
@@ -342,7 +413,7 @@ out:
 void five_state_proceed(struct task_integrity *integrity,
 			struct file_verification_result *file_result)
 {
-	struct integrity_iint_cache *iint = file_result->iint;
+	struct five_iint_cache *iint = (struct five_iint_cache *)file_result->iint;
 	enum five_hooks fn = file_result->fn;
 	struct task_struct *task = file_result->task;
 	struct file *file = file_result->file;
@@ -363,20 +434,6 @@ void five_state_proceed(struct task_integrity *integrity,
 				state_to_reason_cause(task_result.cause), file);
 			five_hook_integrity_reset(task, file,
 				state_to_reason_cause(task_result.cause));
-
-			if  (fn != BPRM_CHECK) {
-				char comm[TASK_COMM_LEN];
-				char filename[NAME_MAX];
-				char *pathbuf = NULL;
-
-				five_dsms_reset_integrity(
-					get_task_comm(comm, task),
-					task_result.cause,
-					five_d_path(&file->f_path, &pathbuf,
-						    filename));
-				if (pathbuf)
-					__putname(pathbuf);
-			}
 		}
 		five_audit_verbose(task, file, five_get_string_fn(fn),
 			task_result.prev_tint, task_result.new_tint,

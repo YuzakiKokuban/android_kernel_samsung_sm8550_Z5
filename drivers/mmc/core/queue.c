@@ -430,6 +430,7 @@ struct gendisk *mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card)
 			min_t(int, card->ext_csd.cmdq_depth, host->cqe_qdepth);
 	else
 		mq->tag_set.queue_depth = MMC_QUEUE_DEPTH;
+	trace_android_vh_mmc_init_queue(mq, card);
 	mq->tag_set.numa_node = NUMA_NO_NODE;
 	mq->tag_set.flags = BLK_MQ_F_SHOULD_MERGE | BLK_MQ_F_BLOCKING;
 	mq->tag_set.nr_hw_queues = 1;
@@ -462,7 +463,7 @@ struct gendisk *mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card)
 
 	if (mmc_host_is_spi(host) && host->use_spi_crc)
 		blk_queue_flag_set(QUEUE_FLAG_STABLE_WRITES, mq->queue);
-	blk_queue_rq_timeout(mq->queue, 60 * HZ);
+	blk_queue_rq_timeout(mq->queue, 20 * HZ);
 
 	mmc_setup_queue(mq, card);
 	return disk;

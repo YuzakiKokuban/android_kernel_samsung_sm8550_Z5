@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * This code is based on IMA's code
  *
@@ -75,7 +76,7 @@ enum five_hooks {
 struct file_verification_result {
 	struct task_struct *task;
 	struct file *file;
-	struct integrity_iint_cache *iint;
+	struct five_iint_cache *iint;
 	enum five_hooks fn;
 	int five_result;
 	void *xattr;
@@ -96,7 +97,7 @@ static inline void file_verification_result_deinit(
 }
 
 int five_appraise_measurement(struct task_struct *task, int func,
-			      struct integrity_iint_cache *iint,
+			      struct five_iint_cache *iint,
 			      struct file *file,
 			      struct five_cert *cert);
 

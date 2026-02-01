@@ -63,6 +63,7 @@
 
 #undef CREATE_TRACE_POINTS
 #include <trace/hooks/signal.h>
+#include <trace/hooks/dtask.h>
 /*
  * SLAB caches for signal bits.
  */
@@ -998,6 +999,7 @@ static void complete_signal(int sig, struct task_struct *p, enum pid_type type)
 {
 	struct signal_struct *signal = p->signal;
 	struct task_struct *t;
+	bool wake;
 
 	/*
 	 * Now find a thread we can wake up to take the signal off the queue.
@@ -1057,7 +1059,10 @@ static void complete_signal(int sig, struct task_struct *p, enum pid_type type)
 				trace_android_vh_exit_signal(t);
 				task_clear_jobctl_pending(t, JOBCTL_PENDING_MASK);
 				sigaddset(&t->pending.signal, SIGKILL);
-				signal_wake_up(t, 1);
+				wake = true;
+				trace_android_vh_exit_signal_whether_wake(t, &wake);
+				if (wake)
+					signal_wake_up(t, 1);
 			} while_each_thread(p, t);
 			return;
 		}
@@ -1226,8 +1231,7 @@ static int send_signal(int sig, struct kernel_siginfo *info, struct task_struct 
 	/* [SystemF/W, si_code is 0 : from userspace, si_code is over 0 : from kernel */
 	if (!is_si_special(info)) {
 		if ((current->pid != 1) && ((sig == SIGKILL && !strncmp("main", t->group_leader->comm, 4))
-				|| ((sig == SIGKILL || sig == SIGSEGV)
-					&& !strncmp("system_server", t->group_leader->comm, 13)))) {
+				|| (sig == SIGKILL && !strncmp("system_server", t->group_leader->comm, 13)))) {
 			pr_info("Send signal %d from %s(%d) to %s(%d) : %d\n",
 						sig, current->comm, current->pid, t->comm, t->pid, info->si_code);
 		}
@@ -1315,8 +1319,10 @@ int do_send_sig_info(int sig, struct kernel_siginfo *info, struct task_struct *p
 	 * System will send SIGIO to the app that locked the file when other apps access the file.
 	 * Report SIGIO to prevent other apps from getting stuck
 	 */
-	if ((sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT || sig == SIGIO))
-		sig_report(p);
+	 if ((sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT || sig == SIGIO)) {
+ 		// Report pid if process is killed/stopped.
+ 		sig_report(p, sig != SIGIO);
+ 	}
 #endif
 
 	if (lock_task_sighand(p, &flags)) {
@@ -1473,6 +1479,7 @@ int group_send_sig_info(int sig, struct kernel_siginfo *info,
 			bool reap = false;
 
 			trace_android_vh_process_killed(current, &reap);
+			trace_android_vh_killed_process(current, p, &reap);
 			if (reap)
 				add_to_oom_reaper(p);
 		}
@@ -1958,10 +1965,11 @@ struct sigqueue *sigqueue_alloc(void)
 
 void sigqueue_free(struct sigqueue *q)
 {
-	unsigned long flags;
 	spinlock_t *lock = &current->sighand->siglock;
+	unsigned long flags;
 
-	BUG_ON(!(q->flags & SIGQUEUE_PREALLOC));
+	if (WARN_ON_ONCE(!(q->flags & SIGQUEUE_PREALLOC)))
+		return;
 	/*
 	 * We must hold ->siglock while testing q->list
 	 * to serialize with collect_signal() or with
@@ -1989,7 +1997,10 @@ int send_sigqueue(struct sigqueue *q, struct pid *pid, enum pid_type type)
 	unsigned long flags;
 	int ret, result;
 
-	BUG_ON(!(q->flags & SIGQUEUE_PREALLOC));
+	if (WARN_ON_ONCE(!(q->flags & SIGQUEUE_PREALLOC)))
+		return 0;
+	if (WARN_ON_ONCE(q->info.si_code != SI_TIMER))
+		return 0;
 
 	ret = -1;
 	rcu_read_lock();
@@ -2008,7 +2019,6 @@ int send_sigqueue(struct sigqueue *q, struct pid *pid, enum pid_type type)
 		 * If an SI_TIMER entry is already queue just increment
 		 * the overrun count.
 		 */
-		BUG_ON(q->info.si_code != SI_TIMER);
 		q->info.si_overrun++;
 		result = TRACE_SIGNAL_ALREADY_PENDING;
 		goto out;
@@ -2053,12 +2063,12 @@ bool do_notify_parent(struct task_struct *tsk, int sig)
 	bool autoreap = false;
 	u64 utime, stime;
 
-	BUG_ON(sig == -1);
+	WARN_ON_ONCE(sig == -1);
 
- 	/* do_notify_parent_cldstop should have been called instead.  */
- 	BUG_ON(task_is_stopped_or_traced(tsk));
+	/* do_notify_parent_cldstop should have been called instead.  */
+	WARN_ON_ONCE(task_is_stopped_or_traced(tsk));
 
-	BUG_ON(!tsk->ptrace &&
+	WARN_ON_ONCE(!tsk->ptrace &&
 	       (tsk->group_leader != tsk || !thread_group_empty(tsk)));
 
 	/* Wake up all pidfd waiters */
@@ -2605,6 +2615,14 @@ static void do_freezer_trap(void)
 	spin_unlock_irq(&current->sighand->siglock);
 	cgroup_enter_frozen();
 	freezable_schedule();
+
+	/*
+	 * We could've been woken by task_work, run it to clear
+	 * TIF_NOTIFY_SIGNAL. The caller will retry if necessary.
+	 */
+	clear_notify_signal();
+	if (unlikely(READ_ONCE(current->task_works)))
+		task_work_run();
 }
 
 static int ptrace_signal(int signr, kernel_siginfo_t *info)
@@ -4700,6 +4718,7 @@ __weak const char *arch_vma_name(struct vm_area_struct *vma)
 {
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(arch_vma_name);
 
 static inline void siginfo_buildtime_checks(void)
 {

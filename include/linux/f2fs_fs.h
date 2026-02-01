@@ -73,6 +73,43 @@ struct f2fs_device {
 	__le32 total_segments;
 } __packed;
 
+/* reason of stop_checkpoint */
+enum stop_cp_reason {
+	STOP_CP_REASON_SHUTDOWN,
+	STOP_CP_REASON_FAULT_INJECT,
+	STOP_CP_REASON_META_PAGE,
+	STOP_CP_REASON_WRITE_FAIL,
+	STOP_CP_REASON_CORRUPTED_SUMMARY,
+	STOP_CP_REASON_UPDATE_INODE,
+	STOP_CP_REASON_FLUSH_FAIL,
+	STOP_CP_REASON_NO_SEGMENT,
+	STOP_CP_REASON_MAX,
+};
+
+#define	MAX_STOP_REASON			32
+
+/* detail reason for EFSCORRUPTED */
+enum f2fs_error {
+	ERROR_CORRUPTED_CLUSTER,
+	ERROR_FAIL_DECOMPRESSION,
+	ERROR_INVALID_BLKADDR,
+	ERROR_CORRUPTED_DIRENT,
+	ERROR_CORRUPTED_INODE,
+	ERROR_INCONSISTENT_SUMMARY,
+	ERROR_INCONSISTENT_FOOTER,
+	ERROR_INCONSISTENT_SUM_TYPE,
+	ERROR_CORRUPTED_JOURNAL,
+	ERROR_INCONSISTENT_NODE_COUNT,
+	ERROR_INCONSISTENT_BLOCK_COUNT,
+	ERROR_INVALID_CURSEG,
+	ERROR_INCONSISTENT_SIT,
+	ERROR_CORRUPTED_VERITY_XATTR,
+	ERROR_CORRUPTED_XATTR,
+	ERROR_MAX,
+};
+
+#define MAX_F2FS_ERRORS			16
+
 struct f2fs_super_block {
 	__le32 magic;			/* Magic Number */
 	__le16 major_ver;		/* Major Version */
@@ -116,7 +153,9 @@ struct f2fs_super_block {
 	__u8 hot_ext_count;		/* # of hot file extension */
 	__le16  s_encoding;		/* Filename charset encoding */
 	__le16  s_encoding_flags;	/* Filename charset encoding flags */
-	__u8 reserved[242];		/* valid reserved region */
+	__u8 s_stop_reason[MAX_STOP_REASON];	/* stop checkpoint reason */
+	__u8 s_errors[MAX_F2FS_ERRORS];		/* reason of image corrupts */
+	__u8 reserved[194];		/* valid reserved region */
 	__u8 mount_opts[64];            /* default mount option for SEC */
 	__le32 crc;			/* checksum of superblock */
 } __packed;
@@ -228,7 +267,7 @@ struct f2fs_extent {
 #define F2FS_INLINE_DATA	0x02	/* file inline data flag */
 #define F2FS_INLINE_DENTRY	0x04	/* file inline dentry flag */
 #define F2FS_DATA_EXIST		0x08	/* file inline data exist flag */
-#define F2FS_INLINE_DOTS	0x10	/* file having implicit dot dentries */
+#define F2FS_INLINE_DOTS	0x10	/* file having implicit dot dentries (obsolete) */
 #define F2FS_EXTRA_ATTR		0x20	/* file having extra attribute */
 #define F2FS_PIN_FILE		0x40	/* file should not be gced */
 #define F2FS_COMPRESS_RELEASED	0x80	/* file released compressed blocks */

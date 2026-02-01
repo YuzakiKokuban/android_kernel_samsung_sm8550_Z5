@@ -163,6 +163,9 @@ static int hidinput_setkeycode(struct input_dev *dev,
 		usage->type = EV_KEY;
 		usage->code = ke->keycode;
 
+		if (usage->code > KEY_MAX || *old_keycode > KEY_MAX)
+			return -EINVAL;
+
 		clear_bit(*old_keycode, dev->keybit);
 		set_bit(usage->code, dev->keybit);
 		dbg_hid("Assigned keycode %d to HID usage code %x\n",
@@ -332,6 +335,10 @@ static const struct hid_device_id hid_battery_quirks[] = {
 	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_HP_SPECTRE_X360_15),
 	  HID_BATTERY_QUIRK_IGNORE },
 	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_SURFACE_GO_TOUCHSCREEN),
+	  HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_SURFACE_GO2_TOUCHSCREEN),
+	  HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_LENOVO_YOGA_C630_TOUCHSCREEN),
 	  HID_BATTERY_QUIRK_IGNORE },
 	{}
 };
@@ -701,6 +708,14 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 			case 0xe: map_key_clear(KEY_POWER2); break;
 			case 0xf: map_key_clear(KEY_RESTART); break;
 			default: goto unknown;
+			}
+			break;
+		}
+
+		if ((usage->hid & 0xf0) == 0xa0) {	/* SystemControl */
+			switch (usage->hid & 0xf) {
+			case 0x9: map_key_clear(KEY_MICMUTE); break;
+			default: goto ignore;
 			}
 			break;
 		}
@@ -1115,6 +1130,16 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 			return;
 		}
 		goto unknown;
+	case HID_UP_CAMERA:
+		switch (usage->hid & HID_USAGE) {
+		case 0x020:
+			map_key_clear(KEY_CAMERA_FOCUS);	break;
+		case 0x021:
+			map_key_clear(KEY_CAMERA);		break;
+		default:
+			goto ignore;
+		}
+		break;
 
 	case HID_UP_HPVENDOR:	/* Reported on a Dutch layout HP5308 */
 		set_bit(EV_REP, input->evbit);

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * This is needed backporting of source code from Kernel version 4.x
  *
@@ -20,6 +21,11 @@
 
 #include <linux/version.h>
 #include <linux/magic.h>
+
+/* fallthrough; is defined since v5.4.0 */
+#ifndef fallthrough
+#define fallthrough                    do {} while (0)  /* fallthrough; */
+#endif
 
 /* OVERLAYFS_SUPER_MAGIC is defined since v4.5.0 */
 #ifndef OVERLAYFS_SUPER_MAGIC
@@ -86,6 +92,17 @@
 #include <linux/sched.h>
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
+#define five_lsmid "five_lsm"
+#else
+#include <linux/lsm_hooks.h>
+static const struct lsm_id struct_five_lsmid = {
+	.name = "five_lsm",
+	.id = LSM_ORDER_LAST,
+};
+static const struct lsm_id * five_lsmid = &struct_five_lsmid;
+#endif
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 9, 0)
 #include <linux/fs.h>
 
@@ -109,8 +126,10 @@ static inline ssize_t __vfs_getxattr(struct dentry *dentry, struct inode *inode,
 }
 #endif
 
-#if defined(CONFIG_ANDROID) && (LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0)   \
-			    ||  LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+#if (defined(CONFIG_ANDROID) && \
+		(LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0) || \
+		LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))) || \
+		LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 /*
  * __vfs_getxattr was changed in Android Kernel v5.4
  * https://android.googlesource.com/kernel/common/+/3484eba91d6b529cc606486a2db79513f3db6c67
@@ -122,7 +141,47 @@ static inline ssize_t __vfs_getxattr(struct dentry *dentry, struct inode *inode,
 		__vfs_getxattr(dentry, inode, name, value, size)
 #endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
+#define BDEV_TYPE block_device
+#define GET_BDEV(bdev) bdev
+#else
+#define BDEV_TYPE file
+#define GET_BDEV(bdev) file_bdev(bdev)
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 5, 0)
+#define do_blkdev_put(bdev, mode) blkdev_put(bdev, mode)
+#define do_blkdev_get_by_dev(dev, mode, holder) \
+	blkdev_get_by_dev(dev, mode, holder)
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
+#define do_blkdev_put(bdev, mode) blkdev_put(bdev, NULL)
+#define do_blkdev_get_by_dev(dev, mode, holder) \
+	blkdev_get_by_dev(dev, mode, holder, NULL)
+#else
+#define do_blkdev_put(bdev, mode) bdev_fput(bdev)
+#define do_blkdev_get_by_dev(dev, mode, holder) \
+	bdev_file_open_by_dev(dev, mode, holder, NULL)
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 5, 0)
+#define do_ahash_request_set_callback(req, tfm, ahash, res) \
+	ahash_request_set_callback(req, tfm, ahash, res)
+#else
+#define do_ahash_request_set_callback(req, tfm, ahash, res) \
+	ahash_request_set_callback(req, tfm, (void *)ahash, res)
+#endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
+#define vfs_getxattr_alloc(dentry, name, xattr_value, size, flags) \
+	vfs_getxattr_alloc(&nop_mnt_idmap, dentry, name, xattr_value, \
+			   size, flags)
+#define __vfs_setxattr_noperm(dentry, name, value, size, flags) \
+	__vfs_setxattr_noperm(&nop_mnt_idmap, dentry, name, value, size, flags)
+#define __vfs_removexattr(dentry, name) \
+		__vfs_removexattr(&nop_mnt_idmap, dentry, name)
+#define __vfs_setxattr(dentry, inode, name, value, size, flags) \
+	__vfs_setxattr(&nop_mnt_idmap, dentry, inode, name, value, size, flags)
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
 #define vfs_getxattr_alloc(dentry, name, xattr_value, size, flags) \
 	vfs_getxattr_alloc(&init_user_ns, dentry, name, xattr_value, \
 			   size, flags)
@@ -130,6 +189,8 @@ static inline ssize_t __vfs_getxattr(struct dentry *dentry, struct inode *inode,
 	__vfs_setxattr_noperm(&init_user_ns, dentry, name, value, size, flags)
 #define __vfs_removexattr(dentry, name) \
 		__vfs_removexattr(&init_user_ns, dentry, name)
+#define __vfs_setxattr(dentry, inode, name, value, size, flags) \
+	__vfs_setxattr(&init_user_ns, dentry, inode, name, value, size, flags)
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 4, 0)
@@ -228,11 +289,21 @@ static inline struct dentry *d_real_comp(struct dentry *dentry)
 {
 	return d_real(dentry, NULL, 0, 0);
 }
-#else
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 9, 0)
 static inline struct dentry *d_real_comp(struct dentry *dentry)
 {
 	return d_real(dentry, d_real_inode(dentry));
 }
+#else
+static inline struct dentry *d_real_comp(struct dentry *dentry)
+{
+	return d_real(dentry, D_REAL_METADATA);
+}
+#endif
+
+/* include/linux/mmzone.h */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+#define MAX_ORDER MAX_PAGE_ORDER
 #endif
 
 /* d_real_inode was added in v4.4.16, removed in v4.5.0 and added again in v4.6.5 */
@@ -244,5 +315,62 @@ static inline struct inode *d_real_inode(struct dentry *dentry)
 	return d_backing_inode(d_real_comp(dentry));
 }
 #endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
+#include "drivers/md/dm-core.h"
+#include "uapi/linux/major.h"
+#include "uapi/linux/loop.h"
+#include "linux/device-mapper.h"
 
+struct loop_device {
+	int		lo_number;
+	loff_t		lo_offset;
+	loff_t		lo_sizelimit;
+	int		lo_flags;
+	char		lo_file_name[LO_NAME_SIZE];
+
+	struct file *lo_backing_file;
+	struct block_device *lo_device;
+
+	gfp_t		old_gfp_mask;
+
+	spinlock_t		lo_lock;
+	int			lo_state;
+	spinlock_t              lo_work_lock;
+	struct workqueue_struct *workqueue;
+	struct work_struct      rootcg_work;
+	struct list_head        rootcg_cmd_list;
+	struct list_head        idle_worker_list;
+	struct rb_root          worker_tree;
+	struct timer_list       timer;
+	bool			use_dio;
+	bool			sysfs_inited;
+
+	struct request_queue	*lo_queue;
+	struct blk_mq_tag_set	tag_set;
+	struct gendisk		*lo_disk;
+	struct mutex		lo_mutex;
+	bool			idr_visible;
+};
+#else
+#include "drivers/block/loop.h"
+#endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
+struct integrity_label;
+enum five_file_integrity {
+	FIVE_FILE_UNKNOWN,
+	FIVE_FILE_FAIL,
+	FIVE_FILE_RSA,
+	FIVE_FILE_DMVERITY,
+	FIVE_FILE_FSVERITY,
+	FIVE_FILE_HMAC
+};
+
+#define FIVE_DMVERITY_PROTECTED	0x00040000
+#define FIVE_TRUSTED_FILE	0x00080000
+#endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)
+#define dm_table_get_num_targets(t) t->num_targets
+#endif
 #endif /* __LINUX_FIVE_PORTING_H */

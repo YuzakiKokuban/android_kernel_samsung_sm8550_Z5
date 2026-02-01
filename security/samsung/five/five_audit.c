@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Audit calls for FIVE audit subsystem.
  *
@@ -23,8 +24,8 @@
 #include "five_audit.h"
 #include "five_cache.h"
 #include "five_porting.h"
-#include "five_dsms.h"
 #include "five_testing.h"
+#include "five_iint.h"
 
 __visible_for_testing __mockable
 void five_audit_msg(struct task_struct *task, struct file *file,
@@ -55,13 +56,6 @@ void five_audit_info(struct task_struct *task, struct file *file,
 	five_audit_msg(task, file, op, prev, tint, cause, result);
 }
 
-__visible_for_testing __mockable
-void call_five_dsms_reset_integrity(const char *task_name, int result,
-					const char *file_name)
-{
-	five_dsms_reset_integrity(task_name, result, file_name);
-}
-
 /**
  * There are two kind of event that can come to the function: error
  * and tampering attempt. 'result' is for identification of error type
@@ -73,30 +67,6 @@ void five_audit_err(struct task_struct *task, struct file *file,
 		enum task_integrity_value tint, const char *cause, int result)
 {
 	five_audit_msg(task, file, op, prev, tint, cause, result);
-
-	if (!result) {
-		char comm[TASK_COMM_LEN];
-		struct task_struct *tsk = task ? task : current;
-
-		call_five_dsms_reset_integrity(get_task_comm(comm, tsk), 0, op);
-	}
-}
-
-__visible_for_testing __mockable
-void call_five_dsms_sign_err(const char *app, int result)
-{
-	five_dsms_sign_err(app, result);
-}
-
-void five_audit_sign_err(struct task_struct *task, struct file *file,
-		const char *op, enum task_integrity_value prev,
-		enum task_integrity_value tint, const char *cause, int result)
-{
-	char comm[TASK_COMM_LEN];
-	struct task_struct *tsk = task ? task : current;
-
-	get_task_comm(comm, tsk);
-	call_five_dsms_sign_err(comm, result);
 }
 
 __visible_for_testing __mockable
@@ -112,7 +82,7 @@ void five_audit_msg(struct task_struct *task, struct file *file,
 	char comm[TASK_COMM_LEN];
 	const char *name = "";
 	struct task_struct *tsk = task ? task : current;
-	struct integrity_iint_cache *iint = NULL;
+	struct five_iint_cache *iint = NULL;
 
 	if (file) {
 		inode = file_inode(file);
@@ -156,7 +126,7 @@ void five_audit_msg(struct task_struct *task, struct file *file,
 		audit_log_format(ab, " ino=%lu", inode->i_ino);
 		audit_log_format(ab, " i_version=%llu ",
 				inode_query_iversion(inode));
-		iint = integrity_inode_get(inode);
+		iint = five_inode_get(inode);
 		if (iint) {
 			audit_log_format(ab, " five_status=%d ",
 					five_get_cache_status(iint));
@@ -206,7 +176,7 @@ void five_audit_hexinfo(struct file *file, const char *msg, char *data,
 	const unsigned char *fname = NULL;
 	char filename[NAME_MAX];
 	char *pathbuf = NULL;
-	struct integrity_iint_cache *iint = NULL;
+	struct five_iint_cache *iint = NULL;
 
 	if (file) {
 		fname = five_d_path(&file->f_path, &pathbuf, filename);
@@ -228,7 +198,7 @@ void five_audit_hexinfo(struct file *file, const char *msg, char *data,
 		audit_log_format(ab, " i_version=%llu ",
 				inode_query_iversion(inode));
 
-		iint = integrity_inode_get(inode);
+		iint = five_inode_get(inode);
 		if (iint) {
 			audit_log_format(ab, " cache_value=%lu ",
 							iint->five_flags);

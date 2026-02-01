@@ -1,3 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2020 Samsung Electronics Co., Ltd. All Rights Reserved
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2
+ * as published by the Free Software Foundation.
+ */
+
 #include <kunit/test.h>
 #include "proca_identity.h"
 #include "test_helpers.h"
@@ -18,6 +27,8 @@ static void init_proca_identity_test(struct kunit *test)
 	struct proca_certificate parsed_cert;
 	DECLARE_NEW(test, struct file, p_file);
 	DECLARE_NEW(test, struct proca_identity, pi);
+	DECLARE_NEW(test, char, cert_val);
+	memcpy(cert_val, "test", sizeof("test"));
 
 	rc = init_certificate_validation_hash();
 	KUNIT_EXPECT_EQ(test, rc, 0);
@@ -26,7 +37,7 @@ static void init_proca_identity_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, rc, 0);
 
 	rc = init_proca_identity(pi, p_file,
-				 "test", sizeof("test"), &parsed_cert);
+				 &cert_val, sizeof(cert_val), &parsed_cert);
 	KUNIT_EXPECT_EQ(test, rc, 0);
 }
 
@@ -37,6 +48,10 @@ static void proca_identity_copy_test(struct kunit *test)
 	DECLARE_NEW(test, struct file, p_file);
 	DECLARE_NEW(test, struct proca_identity, pi_src);
 	DECLARE_NEW(test, struct proca_identity, pi_dst);
+	DECLARE_NEW(test, char, pi_src_val);
+	DECLARE_NEW(test, char, pi_dst_val);
+	memcpy(pi_src_val, "pi_src", sizeof("pi_src"));
+	memcpy(pi_dst_val, "pi_dst", sizeof("pi_dst"));
 
 	rc = init_certificate_validation_hash();
 	KUNIT_EXPECT_EQ(test, rc, 0);
@@ -48,11 +63,11 @@ static void proca_identity_copy_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, rc, 0);
 
 	rc = init_proca_identity(pi_src, p_file,
-				 "pi_src", sizeof("pi_src"), &parsed_cert);
+				 &pi_src_val, sizeof(pi_src_val), &parsed_cert);
 	KUNIT_EXPECT_EQ(test, rc, 0);
 
 	rc = init_proca_identity(pi_dst, p_file,
-				 "pi_dst", sizeof("pi_dst"), &parsed_cert);
+				 &pi_dst_val, sizeof(pi_dst_val), &parsed_cert);
 	KUNIT_EXPECT_EQ(test, rc, 0);
 
 	rc = proca_identity_copy(pi_dst, pi_src);
@@ -84,3 +99,4 @@ static struct kunit_suite proca_identity_test = {
 };
 kunit_test_suites(&proca_identity_test);
 
+MODULE_LICENSE("GPL v2");

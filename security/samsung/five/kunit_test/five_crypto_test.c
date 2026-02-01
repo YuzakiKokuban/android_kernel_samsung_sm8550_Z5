@@ -1,3 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2020 Samsung Electronics Co., Ltd. All Rights Reserved
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2
+ * as published by the Free Software Foundation.
+ */
+
 #include <kunit/test.h>
 #include <crypto/hash_info.h>
 #include <linux/fs.h>
@@ -38,7 +47,7 @@ static void five_calc_file_hash_sha1_test(struct kunit *test)
 
 	file = test_open_file(filename);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, file);
-	vfs_write(file, test_str, sizeof(test_str), 0);
+	test_write_file(file, test_str, sizeof(test_str), 0);
 
 	rc = five_calc_file_hash(file, HASH_ALGO_SHA1, hash, &hash_len);
 
@@ -58,7 +67,7 @@ static void five_calc_file_hash_sha256_test(struct kunit *test)
 
 	file = test_open_file(filename);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, file);
-	vfs_write(file, test_str, sizeof(test_str), 0);
+	test_write_file(file, test_str, sizeof(test_str), 0);
 
 	rc = five_calc_file_hash(file, HASH_ALGO_SHA256, hash, &hash_len);
 
@@ -78,7 +87,7 @@ static void five_calc_file_hash_sha512_test(struct kunit *test)
 
 	file = test_open_file(filename);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, file);
-	vfs_write(file, test_str, sizeof(test_str), 0);
+	test_write_file(file, test_str, sizeof(test_str), 0);
 
 	rc = five_calc_file_hash(file, HASH_ALGO_SHA512, hash, &hash_len);
 

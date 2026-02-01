@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2020 Samsung Electronics Co., Ltd. All Rights Reserved
  *
@@ -5,6 +6,7 @@
  * under the terms of the GNU General Public License version 2
  * as published by the Free Software Foundation.
  */
+
 #include <linux/task_integrity.h>
 #include "five_cache.h"
 #include "five_state.h"
@@ -36,6 +38,7 @@ struct task_verification_result {
 #define CRC_VALUE_NO_MATTER 37 // any uint16
 #define FIVE_RESULT 7
 
+#if defined(CONFIG_UML)
 DECLARE_FUNCTION_MOCK(
 	METHOD(call_crc16), RETURNS(u16), PARAMS(u16, u8 const *, size_t));
 
@@ -52,6 +55,7 @@ DEFINE_FUNCTION_MOCK_VOID_RETURN(five_hook_integrity_reset,
 	PARAMS(struct task_struct *,
 	struct file *,
 	enum task_integrity_reset_cause))
+#endif
 
 const char *task_integrity_state_str(enum task_integrity_state_cause cause);
 int is_system_label(struct integrity_label *label);
@@ -457,6 +461,7 @@ static void five_state_proceed_set_next_state_returns_false_test(
 	five_state_proceed(intg, file_result);
 }
 
+#if defined(CONFIG_UML)
 static void five_state_proceed_set_first_state_not_ret_intg_none_test(
 	struct kunit *test)
 {
@@ -534,14 +539,10 @@ static void five_state_proceed_set_first_state_returns_intg_none_test(
 static void five_state_proceed_set_next_state_returns_intg_none_test(
 	struct kunit *test)
 {
-	char pathname[] = "yyy";
 	char comm[TASK_COMM_LEN] = "zzz";
-	char dsms_msg[MESSAGE_BUFFER_SIZE] = "bbb";
 	DECLARE_NEW(test, struct task_integrity, intg);
 	DECLARE_NEW(test, struct integrity_iint_cache, iint);
 	DECLARE_NEW(test, struct file_verification_result, file_result);
-	int msg_size = snprintf(dsms_msg, MESSAGE_BUFFER_SIZE, "%s|%d|%s",
-		comm, STATE_CAUSE_TAMPERED, kbasename(pathname));
 
 	task_integrity_set(intg, INTEGRITY_NONE);
 	intg->reset_cause = CAUSE_UNSET;
@@ -555,7 +556,7 @@ static void five_state_proceed_set_next_state_returns_intg_none_test(
 	file_result->iint = iint;
 	file_result->fn = MMAP_CHECK;
 	file_result->task = NEW(test, struct task_struct);
-	strncpy(file_result->task->comm, comm, TASK_COMM_LEN);
+	memcpy(file_result->task->comm, comm, TASK_COMM_LEN);
 	file_result->file = NEW(test, struct file);
 	file_result->five_result = FIVE_RESULT;
 
@@ -573,21 +574,12 @@ static void five_state_proceed_set_next_state_returns_intg_none_test(
 		int_eq(test, file_result->five_result))),
 		ptr_return(test, 0));
 
-	KunitReturns(KUNIT_EXPECT_CALL(five_d_path(
-		ptr_eq(test, &file_result->file->f_path),
-		any(test), any(test))),
-		ptr_return(test, pathname));
-
-	KunitReturns(KUNIT_EXPECT_CALL(call_crc16(
-		int_eq(test, 0), streq(test, dsms_msg),
-		int_eq(test, msg_size))),
-		u32_return(test, CRC_VALUE_NO_MATTER));
-
 	five_state_proceed(intg, file_result);
 
 	KUNIT_EXPECT_EQ(test, intg->reset_cause,
 		state_to_reason_cause(STATE_CAUSE_TAMPERED));
 }
+#endif
 
 static struct kunit_case five_state_test_cases[] = {
 	KUNIT_CASE(five_state_task_integrity_state_str_test),
@@ -599,9 +591,11 @@ static struct kunit_case five_state_test_cases[] = {
 	KUNIT_CASE(five_state_set_next_state_test),
 	KUNIT_CASE(five_state_proceed_no_iint_test),
 	KUNIT_CASE(five_state_proceed_set_next_state_returns_false_test),
+#if defined(CONFIG_UML)
 	KUNIT_CASE(five_state_proceed_set_first_state_not_ret_intg_none_test),
 	KUNIT_CASE(five_state_proceed_set_first_state_returns_intg_none_test),
 	KUNIT_CASE(five_state_proceed_set_next_state_returns_intg_none_test),
+#endif
 	{},
 };
 

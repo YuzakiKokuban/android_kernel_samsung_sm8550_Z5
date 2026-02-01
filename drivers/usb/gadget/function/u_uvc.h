@@ -27,6 +27,9 @@ struct f_uvc_opts {
 
 	unsigned int					control_interface;
 	unsigned int					streaming_interface;
+	char						function_name[32];
+
+	bool						enable_interrupt_ep;
 
 	/*
 	 * Control descriptors array pointers for full-/high-speed and

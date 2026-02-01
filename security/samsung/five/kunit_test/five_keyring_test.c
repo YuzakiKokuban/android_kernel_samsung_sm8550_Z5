@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2020 Samsung Electronics Co., Ltd. All Rights Reserved
  *
@@ -5,6 +6,7 @@
  * under the terms of the GNU General Public License version 2
  * as published by the Free Software Foundation.
  */
+
 #include <linux/key-type.h>
 #include <crypto/public_key.h>
 #include <crypto/hash_info.h>
@@ -16,6 +18,7 @@
 struct key *five_request_asymmetric_key(uint32_t keyid);
 int __init five_load_x509_from_mem(const char *data, size_t size);
 
+#if defined(CONFIG_UML)
 DEFINE_FUNCTION_MOCK(
 	METHOD(call_keyring_search), RETURNS(key_ref_t),
 	PARAMS(key_ref_t, struct key_type *, const char *, bool));
@@ -31,6 +34,7 @@ DEFINE_FUNCTION_MOCK(
 	METHOD(call_five_verify_signature), RETURNS(int),
 	PARAMS(struct key *, struct public_key_signature *,
 		struct five_cert *, struct five_cert_header *));
+#endif
 
 #define DIGEST_SIZE 155
 #define VERIFY_SIGNATURE_RET 88
@@ -62,6 +66,7 @@ static void five_keyring_request_asymmetric_key_wo_five_keyring_test(
 	five_keyring = five_keyring_tmp;
 }
 
+#if defined(CONFIG_UML)
 // test 'non-NULL five_keyring', 'keyring_search returns error' scenario
 static void five_keyring_keyring_search_returns_error_test(
 		struct kunit *test)
@@ -206,7 +211,8 @@ static void five_keyring_request_key_returns_success_test(
 	KUNIT_EXPECT_PTR_EQ(test, five_keyring, (struct key *)CORRECT_PTR);
 }
 
-// test 'asymmetric_verify with existing five_keyring' and 'request_asymmetric_key returns error' scenario
+// test 'asymmetric_verify with existing five_keyring' and
+// 'request_asymmetric_key returns error' scenario
 static void five_keyring_request_asymmetric_key_return_error_test(
 		struct kunit *test)
 {
@@ -238,7 +244,8 @@ static void five_keyring_request_asymmetric_key_return_error_test(
 		five_digsig_verify(cert, NULL, 0), (int)WRONG_PTR);
 }
 
-// test 'asymmetric_verify with existing five_keyring' and 'request_asymmetric_key returns success' scenario
+// test 'asymmetric_verify with existing five_keyring' and
+// 'request_asymmetric_key returns success' scenario
 static void five_keyring_request_asymmetric_key_returns_success_test(
 		struct kunit *test)
 {
@@ -285,9 +292,11 @@ static void five_keyring_request_asymmetric_key_returns_success_test(
 	KUNIT_EXPECT_EQ(test, five_digsig_verify(
 		cert, digest, DIGEST_SIZE), VERIFY_SIGNATURE_RET);
 }
+#endif
 
 static struct kunit_case five_keyring_test_cases[] = {
 	KUNIT_CASE(five_keyring_request_asymmetric_key_wo_five_keyring_test),
+#if defined(CONFIG_UML)
 	KUNIT_CASE(five_keyring_keyring_search_returns_error_test),
 	KUNIT_CASE(five_keyring_keyring_search_returns_error_eacces_test),
 	KUNIT_CASE(five_keyring_keyring_search_returns_error_enotdir_test),
@@ -298,6 +307,7 @@ static struct kunit_case five_keyring_test_cases[] = {
 	KUNIT_CASE(five_keyring_request_key_returns_success_test),
 	KUNIT_CASE(five_keyring_request_asymmetric_key_return_error_test),
 	KUNIT_CASE(five_keyring_request_asymmetric_key_returns_success_test),
+#endif
 	{},
 };
 

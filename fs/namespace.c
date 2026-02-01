@@ -31,6 +31,7 @@
 #include <uapi/linux/mount.h>
 #include <linux/fs_context.h>
 #include <linux/shmem_fs.h>
+#include <linux/mnt_idmapping.h>
 #include <linux/fslog.h>
 #ifdef CONFIG_KDP_NS
 #include <linux/kdp.h>
@@ -666,7 +667,7 @@ static void free_vfsmnt(struct mount *mnt)
 #else
 	mnt_userns = mnt_user_ns(&mnt->mnt);
 #endif
-	if (mnt_userns != &init_user_ns)
+	if (!initial_idmapping(mnt_userns))
 		put_user_ns(mnt_userns);
 	kfree_const(mnt->mnt_devname);
 #ifdef CONFIG_SMP
@@ -1091,6 +1092,7 @@ static struct mount *skip_mnt_tree(struct mount *p)
 struct vfsmount *vfs_create_mount(struct fs_context *fc)
 {
 	struct mount *mnt;
+	struct user_namespace *fs_userns;
 
 	if (!fc->root)
 		return ERR_PTR(-EINVAL);
@@ -1116,6 +1118,18 @@ struct vfsmount *vfs_create_mount(struct fs_context *fc)
 	mnt->mnt_mountpoint	= mnt->mnt.mnt_root;
 #endif
 	mnt->mnt_parent		= mnt;
+
+#ifdef CONFIG_KDP_NS
+	fs_userns = ((struct kdp_mount *)mnt)->mnt->mnt_sb->s_user_ns;
+#else
+	fs_userns = mnt->mnt.mnt_sb->s_user_ns;
+#endif
+	if (!initial_idmapping(fs_userns))
+#ifdef CONFIG_KDP_NS
+		((struct kdp_mount *)mnt)->mnt->mnt_userns = get_user_ns(fs_userns);
+#else
+		mnt->mnt.mnt_userns = get_user_ns(fs_userns);
+#endif
 
 	lock_mount_hash();
 #ifdef CONFIG_KDP_NS
@@ -1226,7 +1240,7 @@ static struct mount *clone_mnt(struct mount *old, struct dentry *root,
 	userns = mnt_user_ns(((struct kdp_mount *)old)->mnt);
 	kdp_set_mnt_userns(((struct kdp_mount *)mnt)->mnt, userns);
 
-	if (((struct kdp_mount *)mnt)->mnt->mnt_userns != &init_user_ns) {
+	if (!initial_idmapping(((struct kdp_mount *)mnt)->mnt->mnt_userns)) {
 		userns = get_user_ns(((struct kdp_mount *)mnt)->mnt->mnt_userns);
 		kdp_set_mnt_userns(((struct kdp_mount *)mnt)->mnt, userns);
 	}
@@ -1238,7 +1252,7 @@ static struct mount *clone_mnt(struct mount *old, struct dentry *root,
 
 	atomic_inc(&sb->s_active);
 	mnt->mnt.mnt_userns = mnt_user_ns(&old->mnt);
-	if (mnt->mnt.mnt_userns != &init_user_ns)
+	if (!initial_idmapping(mnt->mnt.mnt_userns))
 		mnt->mnt.mnt_userns = get_user_ns(mnt->mnt.mnt_userns);
 	mnt->mnt.mnt_sb = sb;
 	mnt->mnt.mnt_root = dget(root);
@@ -1436,7 +1450,7 @@ struct vfsmount *mntget(struct vfsmount *mnt)
 		mnt_add_count(real_mount(mnt), 1);
 	return mnt;
 }
-EXPORT_SYMBOL(mntget);
+EXPORT_SYMBOL_NS_GPL(mntget, ANDROID_GKI_VFS_EXPORT_ONLY);
 
 /**
  * path_is_mountpoint() - Check if path is a mount in the current namespace.
@@ -2915,20 +2929,27 @@ static void mnt_warn_timestamp_expiry(struct path *mountpoint, struct vfsmount *
 	struct super_block *sb = mnt->mnt_sb;
 
 	if (!__mnt_is_readonly(mnt) &&
+	   (!(sb->s_iflags & SB_I_TS_EXPIRY_WARNED)) &&
 	   (ktime_get_real_seconds() + TIME_UPTIME_SEC_MAX > sb->s_time_max)) {
-		char *buf = (char *)__get_free_page(GFP_KERNEL);
-		char *mntpath = buf ? d_path(mountpoint, buf, PAGE_SIZE) : ERR_PTR(-ENOMEM);
-		struct tm tm;
+		char *buf, *mntpath;
 
-		time64_to_tm(sb->s_time_max, 0, &tm);
+		buf = (char *)__get_free_page(GFP_KERNEL);
+		if (buf)
+			mntpath = d_path(mountpoint, buf, PAGE_SIZE);
+		else
+			mntpath = ERR_PTR(-ENOMEM);
+		if (IS_ERR(mntpath))
+			mntpath = "(unknown)";
 
-		pr_warn("%s filesystem being %s at %s supports timestamps until %04ld (0x%llx)\n",
+		pr_warn("%s filesystem being %s at %s supports timestamps until %ptTd (0x%llx)\n",
 			sb->s_type->name,
 			is_mounted(mnt) ? "remounted" : "mounted",
-			mntpath,
-			tm.tm_year+1900, (unsigned long long)sb->s_time_max);
+			mntpath, &sb->s_time_max,
+			(unsigned long long)sb->s_time_max);
 
-		free_page((unsigned long)buf);
+		sb->s_iflags |= SB_I_TS_EXPIRY_WARNED;
+		if (buf)
+			free_page((unsigned long)buf);
 	}
 }
 
@@ -3003,7 +3024,12 @@ static int do_remount(struct path *path, int ms_flags, int sb_flags,
 	if (IS_ERR(fc))
 		return PTR_ERR(fc);
 
+	/*
+	 * Indicate to the filesystem that the remount request is coming
+	 * from the legacy mount system call.
+	 */
 	fc->oldapi = true;
+
 	err = parse_monolithic_mount_data(fc, data);
 	if (!err) {
 		down_write(&sb->s_umount);
@@ -3385,6 +3411,12 @@ static int do_new_mount(struct path *path, const char *fstype, int sb_flags,
 	put_filesystem(type);
 	if (IS_ERR(fc))
 		return PTR_ERR(fc);
+
+	/*
+	 * Indicate to the filesystem that the mount request is coming
+	 * from the legacy mount system call.
+	 */
+	fc->oldapi = true;
 
 	if (subtype)
 		err = vfs_parse_fs_string(fc, "subtype",
@@ -4389,28 +4421,32 @@ static int can_idmap_mount(const struct mount_kattr *kattr, struct mount *mnt)
 #else
 	struct vfsmount *m = &mnt->mnt;
 #endif
+	struct user_namespace *fs_userns = m->mnt_sb->s_user_ns;
 
 	if (!kattr->mnt_userns)
 		return 0;
+
+	/*
+	 * Creating an idmapped mount with the filesystem wide idmapping
+	 * doesn't make sense so block that. We don't allow mushy semantics.
+	 */
+	if (kattr->mnt_userns == fs_userns)
+		return -EINVAL;
 
 	/*
 	 * Once a mount has been idmapped we don't allow it to change its
 	 * mapping. It makes things simpler and callers can just create
 	 * another bind-mount they can idmap if they want to.
 	 */
-	if (mnt_user_ns(m) != &init_user_ns)
+	if (is_idmapped_mnt(m))
 		return -EPERM;
 
 	/* The underlying filesystem doesn't support idmapped mounts yet. */
 	if (!(m->mnt_sb->s_type->fs_flags & FS_ALLOW_IDMAP))
 		return -EINVAL;
 
-	/* Don't yet support filesystem mountable in user namespaces. */
-	if (m->mnt_sb->s_user_ns != &init_user_ns)
-		return -EINVAL;
-
 	/* We're not controlling the superblock. */
-	if (!capable(CAP_SYS_ADMIN))
+	if (!ns_capable(fs_userns, CAP_SYS_ADMIN))
 		return -EPERM;
 
 	/* Mount has already been visible in the filesystem hierarchy. */
@@ -4418,6 +4454,27 @@ static int can_idmap_mount(const struct mount_kattr *kattr, struct mount *mnt)
 		return -EINVAL;
 
 	return 0;
+}
+
+/**
+ * mnt_allow_writers() - check whether the attribute change allows writers
+ * @kattr: the new mount attributes
+ * @mnt: the mount to which @kattr will be applied
+ *
+ * Check whether thew new mount attributes in @kattr allow concurrent writers.
+ *
+ * Return: true if writers need to be held, false if not
+ */
+static inline bool mnt_allow_writers(const struct mount_kattr *kattr,
+                     const struct mount *mnt)
+{
+	return (!(kattr->attr_set & MNT_READONLY) ||
+#ifdef CONFIG_KDP_NS
+		(((struct kdp_mount *)mnt)->mnt->mnt_flags & MNT_READONLY)) &&
+#else
+		(mnt->mnt.mnt_flags & MNT_READONLY)) &&
+#endif
+		!kattr->mnt_userns;
 }
 
 static struct mount *mount_setattr_prepare(struct mount_kattr *kattr,
@@ -4454,12 +4511,7 @@ static struct mount *mount_setattr_prepare(struct mount_kattr *kattr,
 
 		last = m;
 
-		if ((kattr->attr_set & MNT_READONLY) &&
-#ifdef CONFIG_KDP_NS
-		    !(((struct kdp_mount *)m)->mnt->mnt_flags & MNT_READONLY)) {
-#else
-		    !(m->mnt.mnt_flags & MNT_READONLY)) {
-#endif
+		if (!mnt_allow_writers(kattr, m)) {
 			*err = mnt_hold_writers(m);
 			if (*err)
 				goto out;
@@ -4472,10 +4524,20 @@ out:
 
 static void do_idmap_mount(const struct mount_kattr *kattr, struct mount *mnt)
 {
-	struct user_namespace *mnt_userns;
+	struct user_namespace *mnt_userns, *old_mnt_userns;
 
 	if (!kattr->mnt_userns)
 		return;
+
+	/*
+	 * We're the only ones able to change the mount's idmapping. So
+	 * mnt->mnt.mnt_userns is stable and we can retrieve it directly.
+	 */
+#ifdef CONFIG_KDP_NS
+	old_mnt_userns = ((struct kdp_mount *)mnt)->mnt->mnt_userns;
+#else
+	old_mnt_userns = mnt->mnt.mnt_userns;
+#endif
 
 	mnt_userns = get_user_ns(kattr->mnt_userns);
 	/* Pairs with smp_load_acquire() in mnt_user_ns(). */
@@ -4486,6 +4548,13 @@ static void do_idmap_mount(const struct mount_kattr *kattr, struct mount *mnt)
 #else
 	smp_store_release(&mnt->mnt.mnt_userns, mnt_userns);
 #endif
+
+	/*
+	 * If this is an idmapped filesystem drop the reference we've taken
+	 * in vfs_create_mount() before.
+	 */
+	if (!initial_idmapping(old_mnt_userns))
+		put_user_ns(old_mnt_userns);
 }
 
 static void mount_setattr_commit(struct mount_kattr *kattr,
@@ -4507,16 +4576,11 @@ static void mount_setattr_commit(struct mount_kattr *kattr,
 #endif
 		}
 
-		/*
-		 * We either set MNT_READONLY above so make it visible
-		 * before ~MNT_WRITE_HOLD or we failed to recursively
-		 * apply mount options.
-		 */
-		if ((kattr->attr_set & MNT_READONLY) &&
+		/* If we had to hold writers unblock them. */
 #ifdef CONFIG_KDP_NS
-		    (((struct kdp_mount*)m)->mnt->mnt_flags & MNT_WRITE_HOLD))
+		if (((struct kdp_mount*)m)->mnt->mnt_flags & MNT_WRITE_HOLD)
 #else
-		    (m->mnt.mnt_flags & MNT_WRITE_HOLD))
+		if (m->mnt.mnt_flags & MNT_WRITE_HOLD)
 #endif
 			mnt_unhold_writers(m);
 
@@ -4575,9 +4639,9 @@ static int do_mount_setattr(struct path *path, struct mount_kattr *kattr)
 	unlock_mount_hash();
 
 	if (kattr->propagation) {
-		namespace_unlock();
 		if (err)
 			cleanup_group_ids(mnt, NULL);
+		namespace_unlock();
 	}
 
 	return err;
@@ -4621,13 +4685,21 @@ static int build_mount_idmapped(const struct mount_attr *attr, size_t usize,
 	}
 
 	/*
-	 * The init_user_ns is used to indicate that a vfsmount is not idmapped.
-	 * This is simpler than just having to treat NULL as unmapped. Users
-	 * wanting to idmap a mount to init_user_ns can just use a namespace
-	 * with an identity mapping.
+	 * The initial idmapping cannot be used to create an idmapped
+	 * mount. We use the initial idmapping as an indicator of a mount
+	 * that is not idmapped. It can simply be passed into helpers that
+	 * are aware of idmapped mounts as a convenient shortcut. A user
+	 * can just create a dedicated identity mapping to achieve the same
+	 * result.
 	 */
 	mnt_userns = container_of(ns, struct user_namespace, ns);
-	if (mnt_userns == &init_user_ns) {
+	if (initial_idmapping(mnt_userns)) {
+		err = -EPERM;
+		goto out_fput;
+	}
+
+	/* We're not controlling the target namespace. */
+	if (!ns_capable(mnt_userns, CAP_SYS_ADMIN)) {
 		err = -EPERM;
 		goto out_fput;
 	}

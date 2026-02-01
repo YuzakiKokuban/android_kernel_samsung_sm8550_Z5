@@ -1,42 +1,55 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2018 Samsung Electronics Co., Ltd. All Rights Reserved
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2
  * as published by the Free Software Foundation.
-*/
+ */
 
 #include <linux/uaccess.h>
 #include <linux/device.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/reboot.h>
 #include <linux/types.h>
 #include <linux/syscalls.h>
 #include <linux/unistd.h>
 #include <linux/version.h>
 #include "include/defex_caches.h"
 #include "include/defex_catch_list.h"
+#include "include/defex_config.h"
+#include "include/defex_debug.h"
 #include "include/defex_internal.h"
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
+#if KERNEL_VER_GTE(5, 6, 0)
 #include <linux/bootconfig.h>
 #endif
 
 MODULE_DESCRIPTION("Defex Linux Security Module");
 
-bool boot_state_recovery __ro_after_init;
+static bool boot_state_recovery __ro_after_init;
+
+static int defex_reboot_notifier(struct notifier_block *nb, unsigned long action, void *unused);
+static atomic_t reboot_pending = ATOMIC_INIT(0);
+
+static struct notifier_block defex_reboot_nb = {
+	.notifier_call = defex_reboot_notifier,
+	.priority = INT_MAX,
+};
 
 #ifdef DEFEX_DEPENDING_ON_OEMUNLOCK
-bool boot_state_unlocked __ro_after_init;
-int warranty_bit __ro_after_init;
+static bool boot_state_unlocked __ro_after_init;
+static int warranty_bit __ro_after_init;
 #endif /* DEFEX_DEPENDING_ON_OEMUNLOCK */
 
-asmlinkage int defex_syscall_enter(long int syscallno, struct pt_regs *regs);
-asmlinkage int (* const defex_syscall_catch_enter)(long int syscallno, struct pt_regs *regs) = defex_syscall_enter;
+asmlinkage int defex_syscall_enter(long syscallno, struct pt_regs *regs);
+asmlinkage int (* const defex_syscall_catch_enter)(long syscallno, struct pt_regs *regs) =
+	defex_syscall_enter;
 static int defex_init_done __initdata;
 
-asmlinkage int defex_syscall_enter(long int syscallno, struct pt_regs *regs)
+asmlinkage int defex_syscall_enter(long syscallno, struct pt_regs *regs)
 {
 	long err;
 	const struct local_syscall_struct *item;
@@ -70,33 +83,50 @@ __visible_for_testing int __init verifiedboot_state_setup(char *str)
 
 	if (str && !strncmp(str, unlocked, sizeof(unlocked))) {
 		boot_state_unlocked = true;
-		pr_crit("Device is unlocked and DEFEX will be disabled.");
+		defex_log_crit("Device is unlocked and DEFEX will be disabled");
 	}
 	return 0;
+}
+
+bool is_boot_state_unlocked(void)
+{
+	return boot_state_unlocked;
 }
 
 __visible_for_testing int __init warrantybit_setup(char *str)
 {
 	if (get_option(&str, &warranty_bit))
-		pr_alert("[DEFEX] Warranty bit setup");
+		defex_log_crit("Warranty bit setup");
 	return 0;
 }
 
 __setup("androidboot.verifiedbootstate=", verifiedboot_state_setup);
 __setup("androidboot.warranty_bit=", warrantybit_setup);
+
+int get_warranty_bit(void)
+{
+	return warranty_bit;
+}
+
 #endif /* DEFEX_DEPENDING_ON_OEMUNLOCK */
 
 __visible_for_testing int __init bootstate_recovery_setup(char *str)
 {
 	if (str && *str == '2') {
 		boot_state_recovery = true;
-		pr_alert("[DEFEX] Recovery mode setup");
+		defex_log_crit("Recovery mode setup");
 	}
 	return 0;
 }
 __setup("bootmode=", bootstate_recovery_setup);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
+
+bool is_boot_state_recovery(void)
+{
+	return boot_state_recovery;
+}
+
+#if KERNEL_VER_GTE(5, 6, 0)
 void __init defex_bootconfig_setup(void)
 {
 	char *value;
@@ -112,15 +142,28 @@ void __init defex_bootconfig_setup(void)
 	value = (char *)xbc_find_value("androidboot.boot_recovery", NULL);
 	bootstate_recovery_setup(value);
 }
-#endif /* LINUX_VERSION_CODE */
+#endif /* KERNEL_VER_GTE(5, 6, 0) */
 
+static int defex_reboot_notifier(struct notifier_block *nb, unsigned long action, void *unused)
+{
+	(void)nb;
+	(void)action;
+	(void)unused;
+	atomic_set(&reboot_pending, 1);
+	return NOTIFY_DONE;
+}
+
+bool is_reboot_pending(void)
+{
+	return atomic_read(&reboot_pending) == 0 ? false : true;
+}
 
 //INIT/////////////////////////////////////////////////////////////////////////
 __visible_for_testing int __init defex_lsm_init(void)
 {
-#ifdef DEFEX_DEBUG_ENABLE
 	int ret;
-#endif /* DEFEX_DEBUG_ENABLE */
+
+	defex_init_features();
 
 #ifdef DEFEX_CACHES_ENABLE
 	defex_file_cache_init();
@@ -133,18 +176,26 @@ __visible_for_testing int __init defex_lsm_init(void)
 #ifdef DEFEX_DEBUG_ENABLE
 	ret = defex_init_sysfs();
 	if (ret) {
-		pr_crit("DEFEX_LSM defex_init_sysfs() failed!");
+		defex_log_crit("LSM defex_init_sysfs() failed!");
 		return ret;
 	}
+#else
+#if (defined(DEFEX_LOG_BUFFER_ENABLE) || defined(DEFEX_LOG_FILE_ENABLE))
+	defex_create_debug(NULL);
+#endif /* DEFEX_LOG_BUFFER_ENABLE || DEFEX_LOG_FILE_ENABLE */
 #endif /* DEFEX_DEBUG_ENABLE */
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
+#if KERNEL_VER_GTE(5, 6, 0)
 	defex_bootconfig_setup();
-#endif /* LINUX_VERSION_CODE */
+#endif /* KERNEL_VER_GTE(4, 5, 0) */
 
-	printk(KERN_INFO "DEFEX_LSM started");
+	ret = register_reboot_notifier(&defex_reboot_nb);
+	if (ret)
+		return ret;
+
+	defex_log_info("LSM started");
 #ifdef DEFEX_LP_ENABLE
-	printk(KERN_INFO "[DEFEX] ADB LP Enabled");
+	defex_log_info("ADB LP Enabled");
 #endif /* DEFEX_LP_ENABLE */
 	defex_init_done = 1;
 	return 0;
@@ -152,7 +203,7 @@ __visible_for_testing int __init defex_lsm_init(void)
 
 __visible_for_testing int __init defex_lsm_load(void)
 {
-	if (!boot_state_unlocked && defex_init_done)
+	if (!is_boot_state_unlocked() && defex_init_done)
 		do_load_rules();
 	return 0;
 }

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2018 Samsung Electronics Co., Ltd. All Rights Reserved
  *
@@ -7,6 +8,7 @@
  */
 
 #include <asm/barrier.h>
+#include <linux/binfmts.h>
 #include <linux/compiler.h>
 #include <linux/const.h>
 #ifdef DEFEX_DSMS_ENABLE
@@ -30,19 +32,20 @@
 #include <linux/unistd.h>
 #include <linux/version.h>
 #include <linux/vmalloc.h>
-#include <linux/binfmts.h>
 #include "include/defex_caches.h"
 #include "include/defex_catch_list.h"
 #include "include/defex_config.h"
+#include "include/defex_debug.h"
 #include "include/defex_internal.h"
 #include "include/defex_rules.h"
+#include "include/defex_tree.h"
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+#if KERNEL_VER_GTE(4, 11, 0)
 #include <linux/sched/mm.h>
 #include <linux/sched/task.h>
 #endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)
+#if KERNEL_VER_GTE(5, 1, 0)
 #define is_task_used(tsk)	refcount_read(&(tsk)->usage)
 #else
 #define is_task_used(tsk)	atomic_read(&(tsk)->usage)
@@ -70,17 +73,18 @@ __visible_for_testing struct task_struct *get_parent_task(const struct task_stru
 #	define MESSAGE_BUFFER_SIZE 200
 #	define STORED_CREDS_SIZE 100
 
-__visible_for_testing void defex_report_violation(const char *violation, uint64_t counter, struct defex_context *dc,
-	uid_t stored_uid, uid_t stored_fsuid, uid_t stored_egid, int case_num)
+__visible_for_testing void defex_report_violation(const char *violation, uint64_t counter,
+	struct defex_context *dc, uid_t stored_uid,
+	uid_t stored_fsuid, uid_t stored_egid, int case_num)
 {
 	int usermode_result;
 	char message[MESSAGE_BUFFER_SIZE + 1];
 
 	struct task_struct *parent = NULL, *p = dc->task;
-	const uid_t uid = uid_get_value(dc->cred.uid);
-	const uid_t euid = uid_get_value(dc->cred.euid);
-	const uid_t fsuid = uid_get_value(dc->cred.fsuid);
-	const uid_t egid = uid_get_value(dc->cred.egid);
+	const uid_t uid = uid_get_value(dc->cred->uid);
+	const uid_t euid = uid_get_value(dc->cred->euid);
+	const uid_t fsuid = uid_get_value(dc->cred->fsuid);
+	const uid_t egid = uid_get_value(dc->cred->egid);
 	const char *process_name = p->comm;
 	const char *prt_process_name = NULL;
 	const char *program_path = get_dc_process_name(dc);
@@ -95,22 +99,27 @@ __visible_for_testing void defex_report_violation(const char *violation, uint64_
 	prt_process_name = parent->comm;
 	prt_program_path = defex_get_filename(parent);
 
-	if (dc->target_file && !case_num) {
+	if (dc->target_file && (!case_num || case_num == 11)) {
 		file_path = get_dc_target_name(dc);
 	} else {
-		snprintf(stored_creds, sizeof(stored_creds), "[%ld, %ld, %ld]", (long)stored_uid, (long)stored_fsuid, (long)stored_egid);
+		snprintf(stored_creds, sizeof(stored_creds),
+			"[%ld, %ld, %ld]", (long)stored_uid, (long)stored_fsuid,
+			(long)stored_egid);
 		stored_creds[sizeof(stored_creds) - 1] = 0;
 	}
-	snprintf(message, sizeof(message), "%d, %d, sc=%d, tsk=%s(%s), %s(%s), [%ld %ld %ld %ld], %s%s, %d",
-		warranty_bit, boot_state_unlocked, dc->syscall_no, process_name, program_path, prt_process_name,
-		prt_program_path, (long)uid, (long)euid, (long)fsuid, (long)egid,
-		(file_path ? "file=" : "stored "), (file_path ? file_path : stored_creds), case_num);
+	snprintf(message, sizeof(message), "%d, %d, sc=%d, tsk=%s(%s), %s(%s),"
+		" [%ld %ld %ld %ld], %s%s, %d",
+		 get_warranty_bit(), is_boot_state_unlocked(), dc->syscall_no, process_name,
+		program_path, prt_process_name, prt_program_path, (long)uid, (long)euid,
+		(long)fsuid, (long)egid, (file_path ? "file=" : "stored "),
+		(file_path ? file_path : stored_creds), case_num);
 	message[sizeof(message) - 1] = 0;
 
 	usermode_result = dsms_send_message(violation, message, counter);
 #ifdef DEFEX_DEBUG_ENABLE
-	printk(KERN_ERR "DEFEX Violation : feature=%s value=%ld, detail=[%s]", violation, (long)counter, message);
-	printk(KERN_ERR "DEFEX Result : %d\n", usermode_result);
+	defex_log_err("Violation : feature=%s value=%ld, detail=[%s]", violation,
+		(long)counter, message);
+	defex_log_err("Result : %d", usermode_result);
 #endif /* DEFEX_DEBUG_ENABLE */
 
 	safe_str_free(prt_program_path);
@@ -118,7 +127,8 @@ __visible_for_testing void defex_report_violation(const char *violation, uint64_
 }
 #endif /* DEFEX_DSMS_ENABLE */
 
-#if defined(DEFEX_SAFEPLACE_ENABLE) || defined(DEFEX_TRUSTED_MAP_ENABLE)
+#if defined(DEFEX_SAFEPLACE_ENABLE) || defined(DEFEX_TRUSTED_MAP_ENABLE) \
+	|| defined(DEFEX_INTEGRITY_ENABLE)
 __visible_for_testing long kill_process(struct task_struct *p)
 {
 	read_lock(&tasklist_lock);
@@ -126,11 +136,13 @@ __visible_for_testing long kill_process(struct task_struct *p)
 	read_unlock(&tasklist_lock);
 	return 0;
 }
-#endif /* DEFEX_SAFEPLACE_ENABLE || DEFEX_TRUSTED_MAP_ENABLE */
+#endif /* DEFEX_SAFEPLACE_ENABLE || DEFEX_TRUSTED_MAP_ENABLE || DEFEX_INTEGRITY_ENABLE */
 
 #ifdef DEFEX_PED_ENABLE
-__visible_for_testing long kill_process_group(struct task_struct *p, int tgid, int pid)
+__visible_for_testing long kill_process_group(int tgid)
 {
+	struct task_struct *p;
+
 	read_lock(&tasklist_lock);
 	for_each_process(p) {
 		if (p->tgid == tgid)
@@ -141,70 +153,74 @@ __visible_for_testing long kill_process_group(struct task_struct *p, int tgid, i
 	return 0;
 }
 
+__visible_for_testing int check_incfs(struct defex_context *dc)
+{
+	char *new_file;
+	struct file *f = dc->target_file;
+	static const char incfs_path[] = "/data/incremental/";
+
+	if (f) {
+		new_file = get_dc_target_name(dc);
+		if (!strncmp(new_file, incfs_path, sizeof(incfs_path) - 1)) {
+#ifdef DEFEX_DEBUG_ENABLE
+			defex_log_crit("Allow IncFS access");
+#endif /* DEFEX_DEBUG_ENABLE */
+			return 1;
+		}
+	}
+	return 0;
+}
+
 __visible_for_testing int task_defex_is_secured(struct defex_context *dc)
 {
 	struct file *exe_file = get_dc_process_file(dc);
-	struct task_struct *p = dc->task->group_leader;
-	struct task_struct *task = dc->task;
 	char *proc_name = get_dc_process_name(dc);
 	int is_secured = 0;
 
 	if (!get_dc_process_dpath(dc))
 		return is_secured;
-
-	if (!strncmp(p->comm, "system_server",  strlen(p->comm))) {
-		return DEFEX_ALLOW;
-	}
-
-	if (!strncmp(p->comm, "ding:background", strlen(p->comm))) {
-		return DEFEX_ALLOW;
-	}
-
-	if (!strncmp(task->comm, "FinalizerDaemon", strlen(task->comm))) {
-		return DEFEX_ALLOW;
-	}
-
-	is_secured = !rules_lookup(proc_name, feature_ped_exception, exe_file);
+	is_secured = !rules_lookup(proc_name, feature_ped_exception, exe_file, NULL, 0);
 	return is_secured;
 }
 
 __visible_for_testing int at_same_group(unsigned int uid1, unsigned int uid2)
 {
-	static const unsigned int lod_base = 0x61A8;
-
 	/* allow the weaken privilege */
-	if (uid1 >= 10000 && uid2 < 10000) return 1;
+	if (uid1 >= 10000 && uid2 < 10000)
+		return 1;
 	/* allow traverse in the same class */
-	if ((uid1 / 1000) == (uid2 / 1000)) return 1;
+	if ((uid1 / 1000) == (uid2 / 1000))
+		return 1;
 	/* allow traverse to isolated ranges */
-	if (uid1 >= 90000) return 1;
-	/* allow LoD process */
-	return ((uid1 >> 16) == lod_base) && ((uid2 >> 16) == lod_base);
+	if (uid1 >= 90000)
+		return 1;
+	return 0;
 }
 
 __visible_for_testing int at_same_group_gid(unsigned int gid1, unsigned int gid2)
 {
-	static const unsigned int lod_base = 0x61A8, inet = 3003;
-
 	/* allow the weaken privilege */
-	if (gid1 >= 10000 && gid2 < 10000) return 1;
+	if (gid1 >= 10000 && gid2 < 10000)
+		return 1;
 	/* allow traverse in the same class */
-	if ((gid1 / 1000) == (gid2 / 1000)) return 1;
+	if ((gid1 / 1000) == (gid2 / 1000))
+		return 1;
 	/* allow traverse to isolated ranges */
-	if (gid1 >= 90000) return 1;
-	/* allow LoD process */
-	return (((gid1 >> 16) == lod_base) || (gid1 == inet)) && ((gid2 >> 16) == lod_base);
+	if (gid1 >= 90000)
+		return 1;
+	return 0;
 }
 
 #ifdef DEFEX_LP_ENABLE
 /* Lower Permission feature decision function */
-__visible_for_testing int lower_adb_permission(struct defex_context *dc, unsigned short cred_flags)
+__visible_for_testing int lower_adb_permission(struct defex_context *dc,
+		unsigned short cred_flags)
 {
 	char *parent_file;
 	struct task_struct *parent = NULL, *p = dc->task;
 #ifndef DEFEX_PERMISSIVE_LP
 	struct cred *shellcred;
-	static const char adbd_str[] = "/system/bin/adbd";
+	static const char adbd_str[] = "/apex/com.android.adbd/bin/adbd";
 #endif /* DEFEX_PERMISSIVE_LP */
 	int ret = 0;
 
@@ -217,9 +233,9 @@ __visible_for_testing int lower_adb_permission(struct defex_context *dc, unsigne
 #ifndef DEFEX_PERMISSIVE_LP
 	if (!strncmp(parent_file, adbd_str, sizeof(adbd_str))) {
 		shellcred = prepare_creds();
-		pr_crit("[DEFEX] adb with root");
+		defex_log_crit("ADB with root");
 		if (!shellcred) {
-			pr_crit("[DEFEX] prepare_creds fail");
+			defex_log_crit("Prepare_creds fail");
 			ret = 0;
 			goto out;
 		}
@@ -233,7 +249,7 @@ __visible_for_testing int lower_adb_permission(struct defex_context *dc, unsigne
 		uid_set_value(shellcred->egid, 2000);
 		uid_set_value(shellcred->fsgid, 2000);
 		commit_creds(shellcred);
-		memcpy(&dc->cred, shellcred, sizeof(struct cred));
+		dc->cred = (struct cred *)current_cred(); //shellcred;
 		set_task_creds(p, 2000, 2000, 2000, cred_flags);
 
 		ret = 1;
@@ -269,18 +285,21 @@ __visible_for_testing int task_defex_check_creds(struct defex_context *dc)
 
 	get_task_creds(p, &ref_uid, &ref_fsuid, &ref_egid, &cred_flags);
 
-	cur_uid = uid_get_value(dc->cred.uid);
-	cur_euid = uid_get_value(dc->cred.euid);
-	cur_fsuid = uid_get_value(dc->cred.fsuid);
-	cur_egid = uid_get_value(dc->cred.egid);
+	cur_uid = uid_get_value(dc->cred->uid);
+	cur_euid = uid_get_value(dc->cred->euid);
+	cur_fsuid = uid_get_value(dc->cred->fsuid);
+	cur_egid = uid_get_value(dc->cred->egid);
 
 	if (!ref_uid) {
-		if (p->tgid != p->pid && p->tgid != 1) {
+		if (p->tgid != p->pid && p->tgid != 1 && p->real_parent->pid != 1) {
 			path = get_dc_process_name(dc);
-			pr_crit("defex[6]: cred wasn't stored [task=%s, filename=%s, uid=%d, tgid=%u, pid=%u, ppid=%u]\n",
+			defex_log_crit("[6]: cred wasn't stored [task=%s, filename=%s,"
+				" uid=%d, tgid=%u, pid=%u, ppid=%u]",
 				p->comm, path, cur_uid, p->tgid, p->pid, p->real_parent->pid);
-			pr_crit("defex[6]: stored [euid=%d fsuid=%d egid=%d] current [uid=%d euid=%d fsuid=%d egid=%d]\n",
-				ref_uid, ref_fsuid, ref_egid, cur_uid, cur_euid, cur_fsuid, cur_egid);
+			defex_log_crit("[6]: stored [euid=%d fsuid=%d egid=%d]"
+				" current [uid=%d euid=%d fsuid=%d egid=%d]",
+				ref_uid, ref_fsuid, ref_egid, cur_uid, cur_euid, cur_fsuid,
+				cur_egid);
 			goto exit;
 		}
 
@@ -293,55 +312,58 @@ __visible_for_testing int task_defex_check_creds(struct defex_context *dc)
 			put_task_struct(parent);
 		}
 
-		if (CHECK_ROOT_CREDS(&dc->cred)) {
+		if (CHECK_ROOT_CREDS(dc->cred)) {
 #ifdef DEFEX_LP_ENABLE
 			if (!lower_adb_permission(dc, cred_flags))
 #endif /* DEFEX_LP_ENABLE */
 			{
 				set_task_creds(p, 1, 1, 1, cred_flags);
 			}
-		}
-		else
+		} else
 			set_task_creds(p, cur_euid, cur_fsuid, cur_egid, cred_flags);
 	} else if (ref_uid == 1) {
-		if (!CHECK_ROOT_CREDS(&dc->cred))
+		if (!CHECK_ROOT_CREDS(dc->cred))
 			set_task_creds(p, cur_euid, cur_fsuid, cur_egid, cred_flags);
 	} else if (ref_uid == dead_uid) {
 		path = get_dc_process_name(dc);
-		pr_crit("defex[5]: process wasn't killed [task=%s, filename=%s, uid=%d, tgid=%u, pid=%u, ppid=%u]\n",
+		defex_log_crit("[5]: process wasn't killed [task=%s, filename=%s, uid=%d,"
+			" tgid=%u, pid=%u, ppid=%u]",
 			p->comm, path, cur_uid, p->tgid, p->pid, p->real_parent->pid);
-		pr_crit("defex[5]: stored [euid=%d fsuid=%d egid=%d] current [uid=%d euid=%d fsuid=%d egid=%d]\n",
+		defex_log_crit("[5]: stored [euid=%d fsuid=%d egid=%d] current [uid=%d"
+			" euid=%d fsuid=%d egid=%d]",
 			ref_uid, ref_fsuid, ref_egid, cur_uid, cur_euid, cur_fsuid, cur_egid);
 		goto exit;
 	} else {
 		check_deeper = 0;
 		/* temporary allow fsuid changes to "media_rw" */
-		if ( (cur_uid != ref_uid) ||
-				(cur_euid != ref_uid) ||
-	 			(cur_egid != ref_egid) ||
-	  			!((cur_fsuid == ref_fsuid) ||
-	  			 (cur_fsuid == ref_uid) ||
-	  			 (cur_fsuid%100000 == AID_SYSTEM) ||
-	  			 (cur_fsuid%100000 == AID_MEDIA_RW) ||
-	  			 (cur_fsuid%100000 == AID_MEDIA_OBB)) ) {
+		if ((cur_uid != ref_uid)
+				|| (cur_euid != ref_uid)
+				|| (cur_egid != ref_egid)
+				|| !((cur_fsuid == ref_fsuid)
+				|| (cur_fsuid == ref_uid)
+				|| (cur_fsuid%100000 == AID_SYSTEM)
+				|| (cur_fsuid%100000 == AID_MEDIA_RW)
+				|| (cur_fsuid%100000 == AID_MEDIA_OBB))) {
 			check_deeper = 1;
-			if (CHECK_ROOT_CREDS(&dc->cred))
+			if (CHECK_ROOT_CREDS(dc->cred))
 				set_task_creds(p, 1, 1, 1, cred_flags);
 			else
 				set_task_creds(p, cur_euid, cur_fsuid, cur_egid, cred_flags);
 		}
 		if (check_deeper &&
-				(!at_same_group(cur_uid, ref_uid) ||
-				!at_same_group(cur_euid, ref_uid) ||
-				!at_same_group_gid(cur_egid, ref_egid) ||
-				!at_same_group(cur_fsuid, ref_fsuid)) &&
-				task_defex_is_secured(dc)) {
-			case_num = ((p->tgid == p->pid) ? 1 : 2);
+				(!at_same_group(cur_uid, ref_uid)
+				|| !at_same_group(cur_euid, ref_uid)
+				|| !at_same_group_gid(cur_egid, ref_egid)
+				|| !at_same_group(cur_fsuid, ref_fsuid))
+				&& task_defex_is_secured(dc)) {
+			case_num = ((p->tgid == p->pid) ?
+				1:2);
 			goto trigger_violation;
 		}
 	}
 
-	if (CHECK_ROOT_CREDS(&dc->cred) && !(cred_flags & CRED_FLAGS_PROOT) && task_defex_is_secured(dc)) {
+	if (CHECK_ROOT_CREDS(dc->cred) && !(cred_flags & CRED_FLAGS_PROOT)
+			&& task_defex_is_secured(dc)) {
 		if (p->tgid != p->pid) {
 			case_num = 3;
 			goto trigger_violation;
@@ -354,11 +376,15 @@ out:
 	return DEFEX_ALLOW;
 
 trigger_violation:
+	if (check_incfs(dc))
+		return DEFEX_ALLOW;
 	set_task_creds(p, dead_uid, dead_uid, dead_uid, cred_flags);
 	path = get_dc_process_name(dc);
-	pr_crit("defex[%d]: credential violation [task=%s, filename=%s, uid=%d, tgid=%u, pid=%u, ppid=%u]\n",
+	defex_log_crit("[%d]: credential violation [task=%s, filename=%s, uid=%d, tgid=%u,"
+		" pid=%u, ppid=%u]",
 		case_num, p->comm, path, cur_uid, p->tgid, p->pid, p->real_parent->pid);
-	pr_crit("defex[%d]: stored [euid=%d fsuid=%d egid=%d] current [uid=%d euid=%d fsuid=%d egid=%d]\n",
+	defex_log_crit("[%d]: stored [euid=%d fsuid=%d egid=%d] current [uid=%d euid=%d"
+		" fsuid=%d egid=%d]",
 		case_num, ref_uid, ref_fsuid, ref_egid, cur_uid, cur_euid, cur_fsuid, cur_egid);
 
 #ifdef DEFEX_DSMS_ENABLE
@@ -368,6 +394,22 @@ trigger_violation:
 exit:
 	return -DEFEX_DENY;
 }
+
+/* Credential escalation feature */
+static int check_ped(struct defex_context *dc, struct task_struct *p, int feature_flag)
+{
+	if (feature_flag & FEATURE_CHECK_CREDS) {
+		if (task_defex_check_creds(dc)) {
+			if (!(feature_flag & FEATURE_CHECK_CREDS_SOFT)) {
+				kill_process_group(p->tgid);
+				return -DEFEX_DENY;
+			}
+		}
+	}
+	return DEFEX_ALLOW;
+}
+#else
+#define check_ped(...) DEFEX_ALLOW
 #endif /* DEFEX_PED_ENABLE */
 
 #ifdef DEFEX_INTEGRITY_ENABLE
@@ -381,14 +423,14 @@ __visible_for_testing int task_defex_integrity(struct defex_context *dc)
 		goto out;
 
 	new_file = get_dc_target_name(dc);
-	is_violation = rules_lookup(new_file, feature_integrity_check, dc->target_file);
+	is_violation = rules_lookup(new_file, feature_integrity_check, dc->target_file, NULL, 0);
 
 	if (is_violation == DEFEX_INTEGRITY_FAIL) {
 		ret = -DEFEX_DENY;
 		proc_file = get_dc_process_name(dc);
 
-		pr_crit("defex: integrity violation [task=%s (%s), child=%s, uid=%d]\n",
-				p->comm, proc_file, new_file, uid_get_value(dc->cred.uid));
+		defex_log_crit("Integrity violation [task=%s (%s), child=%s, uid=%d]",
+				p->comm, proc_file, new_file, uid_get_value(dc->cred->uid));
 #ifdef DEFEX_DSMS_ENABLE
 			defex_report_violation(INTEGRITY_VIOLATION, 0, dc, 0, 0, 0, 0);
 #endif /* DEFEX_DSMS_ENABLE */
@@ -396,6 +438,25 @@ __visible_for_testing int task_defex_integrity(struct defex_context *dc)
 out:
 	return ret;
 }
+
+/* Integrity feature */
+static int check_integrity(struct defex_context *dc, struct task_struct *p,
+				int feature_flag, int syscall)
+{
+	if (feature_flag & FEATURE_INTEGRITY) {
+		if (syscall == __DEFEX_execve) {
+			if (task_defex_integrity(dc) == -DEFEX_DENY) {
+				if (!(feature_flag & FEATURE_INTEGRITY_SOFT)) {
+					kill_process(p);
+					return -DEFEX_DENY;
+				}
+			}
+		}
+	}
+	return DEFEX_ALLOW;
+}
+#else
+#define check_integrity(...) DEFEX_ALLOW
 #endif /* DEFEX_INTEGRITY_ENABLE */
 
 #ifdef DEFEX_SAFEPLACE_ENABLE
@@ -406,21 +467,21 @@ __visible_for_testing int task_defex_safeplace(struct defex_context *dc)
 	char *proc_file, *new_file;
 	struct task_struct *p = dc->task;
 
-	if (!CHECK_ROOT_CREDS(&dc->cred))
+	if (!CHECK_ROOT_CREDS(dc->cred))
 		goto out;
 
 	if (!get_dc_target_dpath(dc))
 		goto out;
 
 	new_file = get_dc_target_name(dc);
-	is_violation = !rules_lookup(new_file, feature_safeplace_path, dc->target_file);
+	is_violation = !rules_lookup(new_file, feature_safeplace_path, dc->target_file, NULL, 0);
 
 	if (is_violation) {
 		ret = -DEFEX_DENY;
 		proc_file = get_dc_process_name(dc);
 
-		pr_crit("defex: safeplace violation [task=%s (%s), child=%s, uid=%d]\n",
-			p->comm, proc_file, new_file, uid_get_value(dc->cred.uid));
+		defex_log_crit("Safeplace violation [task=%s (%s), child=%s, uid=%d]",
+			p->comm, proc_file, new_file, uid_get_value(dc->cred->uid));
 #ifdef DEFEX_DSMS_ENABLE
 			defex_report_violation(SAFEPLACE_VIOLATION, 0, dc, 0, 0, 0, 0);
 #endif /* DEFEX_DSMS_ENABLE */
@@ -428,28 +489,48 @@ __visible_for_testing int task_defex_safeplace(struct defex_context *dc)
 out:
 	return ret;
 }
+
+/* Safeplace feature */
+static int check_safeplace(struct defex_context *dc, struct task_struct *p,
+				int feature_flag, int syscall)
+{
+	if (feature_flag & FEATURE_SAFEPLACE) {
+		if (syscall == __DEFEX_execve) {
+			if (task_defex_safeplace(dc) == -DEFEX_DENY) {
+				if (!(feature_flag & FEATURE_SAFEPLACE_SOFT)) {
+					kill_process(p);
+					return -DEFEX_DENY;
+				}
+			}
+		}
+	}
+	return DEFEX_ALLOW;
+}
+#else
+#define check_safeplace(...) DEFEX_ALLOW
 #endif /* DEFEX_SAFEPLACE_ENABLE */
 
 #ifdef DEFEX_TRUSTED_MAP_ENABLE
 /* Trusted map feature decision function */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
+#if KERNEL_VER_GTE(5, 9, 0)
 __visible_for_testing int task_defex_trusted_map(struct defex_context *dc, va_list ap)
 {
 	int ret = DEFEX_ALLOW, argc;
 	struct linux_binprm *bprm;
 
-	if (!CHECK_ROOT_CREDS(&dc->cred))
+	if (!CHECK_ROOT_CREDS(dc->cred))
 		goto out;
 
 	bprm = va_arg(ap, struct linux_binprm *);
 	argc = bprm->argc;
 #ifdef DEFEX_DEBUG_ENABLE
 	if (argc <= 0)
-		pr_crit("[DEFEX][DTM] Invalid trusted map arguments - check integration on fs/exec.c (argc %d)", argc);
+		defex_log_crit("[DTM] Invalid trusted map arguments - check integration on"
+			" fs/exec.c (argc %d)", argc);
 #endif
 
 	ret = defex_trusted_map_lookup(dc, argc, bprm);
-	if (defex_tm_mode_enabled(DEFEX_TM_PERMISSIVE_MODE))
+	if (defex_get_features() & FEATURE_TRUSTED_MAP_SOFT)
 		ret = DEFEX_ALLOW;
 out:
 	return ret;
@@ -460,23 +541,47 @@ __visible_for_testing int task_defex_trusted_map(struct defex_context *dc, va_li
 	int ret = DEFEX_ALLOW, argc;
 	void *argv;
 
-	if (!CHECK_ROOT_CREDS(&dc->cred))
+	if (!CHECK_ROOT_CREDS(dc->cred))
 		goto out;
 
 	argc = va_arg(ap, int);
 	argv = va_arg(ap, void *);
 #ifdef DEFEX_DEBUG_ENABLE
 	if (argc <= 0)
-		pr_crit("[DEFEX][DTM] Invalid trusted map arguments - check integration on fs/exec.c (argc %d)", argc);
+		defex_log_crit(
+			"[DTM] Invalid trusted map arguments - check integration on fs/exec.c"
+			" (argc %d)", argc);
 #endif
 
 	ret = defex_trusted_map_lookup(dc, argc, argv);
-	if (defex_tm_mode_enabled(DEFEX_TM_PERMISSIVE_MODE))
+	if (defex_get_features() & FEATURE_TRUSTED_MAP_SOFT)
 		ret = DEFEX_ALLOW;
 out:
 	return ret;
 }
 #endif
+
+/* Trusted map feature */
+static int check_trusted_map(struct defex_context *dc, struct task_struct *p,
+				int feature_flag, int syscall, va_list ap)
+{
+	int ret = DEFEX_ALLOW;
+
+	if (feature_flag & FEATURE_TRUSTED_MAP) {
+		if (syscall == __DEFEX_execve) {
+			ret = task_defex_trusted_map(dc, ap);
+			if (ret == -DEFEX_DENY) {
+				if (!(feature_flag & FEATURE_TRUSTED_MAP_SOFT)) {
+					kill_process(p);
+					return ret;
+				}
+			}
+		}
+	}
+	return ret;
+}
+#else
+#define check_trusted_map(...) DEFEX_ALLOW
 #endif /* DEFEX_TRUSTED_MAP_ENABLE */
 
 #ifdef DEFEX_IMMUTABLE_ENABLE
@@ -484,15 +589,25 @@ out:
 /* Immutable feature decision function */
 __visible_for_testing int task_defex_src_exception(struct defex_context *dc)
 {
-	struct file *exe_file = get_dc_process_file(dc);
-	char *proc_name = get_dc_process_name(dc);
-	int allow = 1;
+	struct file *proc_file;
+	char *target_name, *proc_name = get_dc_process_name(dc);
+	int allow = 0;
+	struct d_tree_item found_item;
 
 	if (!get_dc_process_dpath(dc))
-		return allow;
+		return 1;
 
-	exe_file = get_dc_process_file(dc);
-	allow = rules_lookup(proc_name, feature_immutable_src_exception, exe_file);
+	proc_file = get_dc_process_file(dc);
+	allow = rules_lookup(proc_name, feature_immutable_src_exception, proc_file,
+		&found_item, 0);
+
+	if (allow && (found_item.features & d_tree_item_linked) &&
+			(found_item.features & feature_is_file) &&
+			(found_item.linked_features & feature_immutable_src_exception)) {
+		target_name = get_dc_target_name(dc);
+		allow = rules_lookup(target_name, feature_immutable_dst_exception,
+			dc->target_file, NULL, allow);
+	}
 	return allow;
 }
 
@@ -500,16 +615,23 @@ __visible_for_testing int task_defex_src_exception(struct defex_context *dc)
 __visible_for_testing int task_defex_immutable(struct defex_context *dc, int attribute)
 {
 	int ret = DEFEX_ALLOW, is_violation = 0;
-	char *proc_file, *new_file;
+	char *proc_name, *target_name;
 	struct task_struct *p = dc->task;
 
 	if (!get_dc_target_dpath(dc))
 		goto out;
 
-	new_file = get_dc_target_name(dc);
-	is_violation = rules_lookup(new_file, attribute, dc->target_file);
+	target_name = get_dc_target_name(dc);
+	is_violation = rules_lookup(target_name, attribute, dc->target_file, NULL, 0);
+
+	if (is_violation)
+		is_violation = !rules_lookup(target_name, feature_immutable_tgt_exception,
+					    dc->target_file, NULL, 0);
 
 	if (is_violation) {
+		if (!get_dc_process_dpath(dc))
+			goto out;
+
 		/* Check the Source exception and self-access */
 		if (attribute == feature_immutable_path_open &&
 				(task_defex_src_exception(dc) ||
@@ -517,17 +639,252 @@ __visible_for_testing int task_defex_immutable(struct defex_context *dc, int att
 			goto out;
 
 		ret = -DEFEX_DENY;
-		proc_file = get_dc_process_name(dc);
-		pr_crit("defex: immutable %s violation [task=%s (%s), access to:%s]\n",
-			(attribute==feature_immutable_path_open)?"open":"write", p->comm, proc_file, new_file);
+		proc_name = get_dc_process_name(dc);
+		defex_log_crit("Immutable %s violation [task=%s (%s), access to:%s]",
+			(attribute == feature_immutable_path_open) ? "open" : "write",
+			p->comm, proc_name, target_name);
 #ifdef DEFEX_DSMS_ENABLE
- 		defex_report_violation(IMMUTABLE_VIOLATION, 0, dc, 0, 0, 0, 0);
+		defex_report_violation(IMMUTABLE_VIOLATION, 0, dc, 0, 0, 0, 0);
 #endif /* DEFEX_DSMS_ENABLE */
 	}
 out:
 	return ret;
 }
+
+/* Immutable feature */
+static int check_immutable(struct defex_context *dc, int feature_flag, int syscall)
+{
+	int attribute = (syscall == __DEFEX_openat) ?
+				feature_immutable_path_open : feature_immutable_path_write;
+
+	if (feature_flag & FEATURE_IMMUTABLE) {
+		if (syscall == __DEFEX_openat || syscall == __DEFEX_write) {
+			if (task_defex_immutable(dc, attribute) == -DEFEX_DENY) {
+				if (!(feature_flag & FEATURE_IMMUTABLE_SOFT))
+					return -DEFEX_DENY;
+			}
+		}
+	}
+	return DEFEX_ALLOW;
+}
+#else
+#define check_immutable(...) DEFEX_ALLOW
 #endif /* DEFEX_IMMUTABLE_ENABLE */
+
+#ifdef DEFEX_IMMUTABLE_ROOT_ENABLE
+
+/* Immutable root feature decision function */
+__visible_for_testing int task_defex_immutable_root(struct defex_context *dc)
+{
+	int ret = DEFEX_ALLOW, is_handled = 0;
+	int offset_part1, is_violation = 0;
+	unsigned int attribute;
+	struct file *proc_file;
+	char *proc_name, *target_name;
+	struct task_struct *p = dc->task;
+	struct d_tree_item found_item;
+	static const char data_path_header[6] = "/data/";
+
+	if (!get_dc_target_dpath(dc) || !get_dc_process_dpath(dc))
+		goto out;
+
+	target_name = get_dc_target_name(dc);
+
+	/* handle feature_immutable_root case */
+	if (CHECK_ROOT_CREDS(dc->cred)
+			&& !strncmp(data_path_header, target_name, sizeof(data_path_header))) {
+
+		is_handled = 1;
+		attribute = feature_immutable_root;
+		proc_file = get_dc_process_file(dc);
+		proc_name = get_dc_process_name(dc);
+
+		/* Check the process file */
+		offset_part1 = rules_lookup(proc_name, attribute, proc_file, &found_item, 0);
+		if (offset_part1 == 1)
+			goto out;
+
+		/* Check the opening file, generate violation if rule not found */
+		is_violation = !rules_lookup(target_name, attribute, dc->target_file,
+			&found_item, offset_part1);
+	}
+
+	if (is_violation) {
+		/* Check the Source exception and self-access */
+		if (defex_files_identical(get_dc_process_file(dc), dc->target_file))
+			goto out;
+
+		ret = -DEFEX_DENY;
+		proc_name = get_dc_process_name(dc);
+		defex_log_crit("Immutable root violation [task=%s (%s), access to:%s]",
+			p->comm, proc_name, target_name);
+#ifdef DEFEX_DSMS_ENABLE
+		defex_report_violation(IMMUTABLE_VIOLATION, 0, dc, 0, 0, 0, 11);
+#endif /* DEFEX_DSMS_ENABLE */
+	}
+out:
+	return ret;
+}
+
+/* Immutable root feature */
+static int check_immutable_root(struct defex_context *dc, int feature_flag, int syscall)
+{
+	if (feature_flag & FEATURE_IMMUTABLE_ROOT) {
+		if (syscall == __DEFEX_openat) {
+			if (task_defex_immutable_root(dc) == -DEFEX_DENY) {
+				if (!(feature_flag & FEATURE_IMMUTABLE_ROOT_SOFT))
+					return -DEFEX_DENY;
+			}
+		}
+	}
+	return DEFEX_ALLOW;
+}
+#else
+#define check_immutable_root(...) DEFEX_ALLOW
+#endif /* DEFEX_IMMUTABLE_ROOT_ENABLE */
+
+#ifdef DEFEX_IMMUTABLE_ROOT_V2_ENABLE
+__visible_for_testing char *get_dc_full_package_name(struct defex_context *dc)
+{
+	struct mm_struct *mm = get_task_mm(dc->task);
+	unsigned long arg_start, arg_end;
+	size_t sz, i;
+	char *buffer = NULL, *ret = NULL;
+
+	if (!mm) {
+		defex_log_crit("%s: mm is null\n", __func__);
+		goto out;
+	}
+
+	spin_lock(&mm->arg_lock);
+	arg_start = mm->arg_start;
+	arg_end = mm->arg_end;
+	spin_unlock(&mm->arg_lock);
+
+	sz = (arg_end > arg_start) ? (size_t)(arg_end - arg_start) : 0;
+
+	if (sz <= 0 || sz > PAGE_SIZE) {
+		defex_log_crit("%s: invalid argument length\n", __func__);
+		goto out;
+	}
+
+	buffer = kzalloc(sz + 2, GFP_KERNEL);
+
+	if (!buffer)
+		goto out;
+
+	if (copy_from_user(buffer, (void __user *) arg_start, sz) != 0) {
+		defex_log_crit("%s: Failed to copy from user\n", __func__);
+		goto out;
+	}
+
+	for (i = 0; i < sz; i++)
+		if (buffer[i] == '\0')
+			break;
+
+	if (*buffer != '/') {
+		memmove(buffer + 1, buffer, i);
+		buffer[0] = '/';
+		buffer[i+1] = '\0';
+	}
+	ret = buffer;
+
+out:
+	if (mm)
+		mmput(mm);
+	if (!ret && buffer)
+		kfree(buffer);
+
+	return ret;
+}
+
+__visible_for_testing int get_dc_package_name(char *full_package_name)
+{
+	char *colon = NULL;
+
+	if (!full_package_name || !(*full_package_name)) {
+		defex_log_crit("%s: full_package_name is null or empty\n", __func__);
+		return -1;
+	}
+
+	colon = strchr(full_package_name, ':');
+	if (colon)
+		*colon = '\0';
+
+	return 0;
+}
+
+/* Immutable root v2 feature decision function */
+__visible_for_testing int task_defex_immutable_root_v2(struct defex_context *dc)
+{
+	int ret = DEFEX_ALLOW, is_handled = 0;
+	int offset_part1, is_violation = 0;
+	unsigned int attribute;
+	struct file *proc_file;
+	char *proc_name, *target_name, *pkg_name = NULL;
+	struct task_struct *p = dc->task;
+	struct d_tree_item found_item;
+	static const char data_path_header[15] = "/data/sec_pass/";
+
+	if (!get_dc_target_dpath(dc) || !get_dc_process_dpath(dc))
+		goto out;
+
+	target_name = get_dc_target_name(dc);
+
+	if (!CHECK_ROOT_CREDS(dc->cred)
+			&& !strncmp(data_path_header, target_name, sizeof(data_path_header))) {
+		is_handled = 1;
+		attribute = feature_immutable_root_v2;
+		proc_file = get_dc_process_file(dc);
+		proc_name = get_dc_process_name(dc);
+		pkg_name = get_dc_full_package_name(dc);
+
+		if (pkg_name) {
+			if (get_dc_package_name(pkg_name) == -1)
+				defex_log_crit("%s: Failed to get package name\n", __func__);
+		}
+		proc_name = pkg_name ? pkg_name : proc_name;
+		/* Check the process file */
+		offset_part1 = rules_lookup(proc_name, attribute, proc_file, &found_item, 0);
+
+		if (offset_part1 == 1)
+			goto out;
+
+		/* Check the opening file, generate violation if rule not found */
+		is_violation = !rules_lookup(target_name, attribute, dc->target_file,
+			&found_item, offset_part1);
+	}
+
+	if (is_violation) {
+		/* Check the Source exception and self-access */
+		if (defex_files_identical(get_dc_process_file(dc), dc->target_file))
+			goto out;
+
+		ret = -DEFEX_DENY;
+		defex_log_crit("Immutable root v2 violation [task=%s (%s), access to:%s]",
+			p->comm, proc_name, target_name);
+	}
+out:
+	kfree(pkg_name);
+	return ret;
+}
+
+/* Immutable root feature */
+static int check_immutable_root_v2(struct defex_context *dc, int feature_flag, int syscall)
+{
+	if (feature_flag & FEATURE_IMMUTABLE_ROOT_V2) {
+		if (syscall == __DEFEX_openat) {
+			if (task_defex_immutable_root_v2(dc) == -DEFEX_DENY) {
+				if (!(feature_flag & FEATURE_IMMUTABLE_ROOT_V2_SOFT))
+					return -DEFEX_DENY;
+			}
+		}
+	}
+	return DEFEX_ALLOW;
+}
+#else
+#define check_immutable_root_v2(...) DEFEX_ALLOW
+#endif /* DEFEX_IMMUTABLE_ROOT_V2_ENABLE */
 
 /* Main decision function */
 int task_defex_enforce(struct task_struct *p, struct file *f, int syscall, ...)
@@ -536,20 +893,20 @@ int task_defex_enforce(struct task_struct *p, struct file *f, int syscall, ...)
 	int feature_flag;
 	const struct local_syscall_struct *item;
 	struct defex_context dc;
-#ifdef DEFEX_TRUSTED_MAP_ENABLE
 	va_list ap;
-#endif
 
-	if (boot_state_unlocked)
+	if (is_boot_state_unlocked())
 		return ret;
 
 	if (!p || p->pid == 1 || !p->mm || !is_task_used(p))
 		return ret;
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 14, 0))
-	if ((p->state & (__TASK_STOPPED | TASK_DEAD)) || (p->exit_state & (EXIT_ZOMBIE | EXIT_DEAD)))
+#if (KERNEL_VER_LESS(5, 14, 0))
+	if ((p->state & (__TASK_STOPPED | TASK_DEAD))
+		|| (p->exit_state & (EXIT_ZOMBIE | EXIT_DEAD)))
 #else
-	if ((p->__state & (__TASK_STOPPED | TASK_DEAD)) || (p->exit_state & (EXIT_ZOMBIE | EXIT_DEAD)))
+	if ((p->__state & (__TASK_STOPPED | TASK_DEAD))
+		|| (p->exit_state & (EXIT_ZOMBIE | EXIT_DEAD)))
 #endif
 		return ret;
 
@@ -562,160 +919,108 @@ int task_defex_enforce(struct task_struct *p, struct file *f, int syscall, ...)
 
 	feature_flag = defex_get_features();
 	get_task_struct(p);
-	if (!init_defex_context(&dc, syscall, p, f))
-		goto do_allow;
-
-#ifdef DEFEX_PED_ENABLE
-	/* Credential escalation feature */
-	if (feature_flag & FEATURE_CHECK_CREDS)	{
-		ret = task_defex_check_creds(&dc);
-		if (ret) {
-			if (!(feature_flag & FEATURE_CHECK_CREDS_SOFT)) {
-				release_defex_context(&dc);
-				put_task_struct(p);
-				kill_process_group(p, p->tgid, p->pid);
-				return -DEFEX_DENY;
-			}
-		}
+	if (!init_defex_context(&dc, syscall, p, f)) {
+		release_defex_context(&dc);
+		put_task_struct(p);
+		return DEFEX_ALLOW;
 	}
-#endif /* DEFEX_PED_ENABLE */
 
-#ifdef DEFEX_INTEGRITY_ENABLE
-	/* Integrity feature */
-	if (feature_flag & FEATURE_INTEGRITY) {
-		if (syscall == __DEFEX_execve) {
-			ret = task_defex_integrity(&dc);
-			if (ret == -DEFEX_DENY) {
-				if (!(feature_flag & FEATURE_INTEGRITY_SOFT)) {
-					release_defex_context(&dc);
-					put_task_struct(p);
-					kill_process(p);
-					return -DEFEX_DENY;
-				}
-			}
-		}
-	}
-#endif /* DEFEX_INTEGRITY_ENABLE */
 
-#ifdef DEFEX_SAFEPLACE_ENABLE
-	/* Safeplace feature */
-	if (feature_flag & FEATURE_SAFEPLACE) {
-		if (syscall == __DEFEX_execve) {
-			ret = task_defex_safeplace(&dc);
-			if (ret == -DEFEX_DENY) {
-				if (!(feature_flag & FEATURE_SAFEPLACE_SOFT)) {
-					release_defex_context(&dc);
-					put_task_struct(p);
-					kill_process(p);
-					return -DEFEX_DENY;
-				}
-			}
-		}
-	}
-#endif /* DEFEX_SAFEPLACE_ENABLE */
+	ret = check_ped(&dc, p, feature_flag);
+	if (ret == -DEFEX_DENY)
+		goto exit;
 
-#ifdef DEFEX_IMMUTABLE_ENABLE
-	/* Immutable feature */
-	if (feature_flag & FEATURE_IMMUTABLE) {
-		if (syscall == __DEFEX_openat || syscall == __DEFEX_write) {
-			ret = task_defex_immutable(&dc,
-				(syscall == __DEFEX_openat)?feature_immutable_path_open:feature_immutable_path_write);
-			if (ret == -DEFEX_DENY) {
-				if (!(feature_flag & FEATURE_IMMUTABLE_SOFT)) {
-					goto do_deny;
-				}
-			}
-		}
-	}
-#endif /* DEFEX_IMMUTABLE_ENABLE */
+	ret = check_integrity(&dc, p, feature_flag, syscall);
+	if (ret == -DEFEX_DENY)
+		goto exit;
 
-#ifdef DEFEX_TRUSTED_MAP_ENABLE
-	/* Trusted map feature */
-	if (feature_flag & FEATURE_TRUSTED_MAP) {
-		if (syscall == __DEFEX_execve) {
-			va_start(ap, syscall);
-			ret = task_defex_trusted_map(&dc, ap);
-			va_end(ap);
-			if (ret == -DEFEX_DENY) {
-				if (!(feature_flag & FEATURE_TRUSTED_MAP_SOFT)) {
-					kill_process(p);
-					goto do_deny;
-				}
-			}
-		}
-	}
-#endif /* DEFEX_TRUSTED_MAP_ENABLE */
-do_allow:
+	ret = check_safeplace(&dc, p, feature_flag, syscall);
+	if (ret == -DEFEX_DENY)
+		goto exit;
+
+	ret = check_immutable(&dc, feature_flag, syscall);
+	if (ret == -DEFEX_DENY)
+		goto exit;
+
+	ret = check_immutable_root(&dc, feature_flag, syscall);
+	if (ret == -DEFEX_DENY)
+		goto exit;
+
+	ret = check_immutable_root_v2(&dc, feature_flag, syscall);
+	if (ret == -DEFEX_DENY)
+		goto exit;
+
+	va_start(ap, syscall);
+	ret = check_trusted_map(&dc, p, feature_flag, syscall, ap);
+	va_end(ap);
+	if (ret == -DEFEX_DENY)
+		goto exit;
+
+exit:
 	release_defex_context(&dc);
 	put_task_struct(p);
-	return DEFEX_ALLOW;
-#if defined(DEFEX_IMMUTABLE_ENABLE) || defined(DEFEX_TRUSTED_MAP_ENABLE)
-do_deny:
-	release_defex_context(&dc);
-	put_task_struct(p);
-	return -DEFEX_DENY;
-#endif /* DEFEX_IMMUTABLE_ENABLE || DEFEX_TRUSTED_MAP_ENABLE */
+	return ret;
 }
 
 int task_defex_zero_creds(struct task_struct *tsk)
 {
 	int is_fork = -1;
-	if (tsk->flags & (PF_KTHREAD | PF_WQ_WORKER)) {
+
+	if (tsk->flags & (PF_KTHREAD | PF_WQ_WORKER))
 		return 0;
-	}
 	if (is_task_creds_ready()) {
 		is_fork = ((tsk->flags & PF_FORKNOEXEC) && (!tsk->on_rq));
 #ifdef TASK_NEW
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 14, 0))
+#if (KERNEL_VER_LESS(5, 14, 0))
 		if (!is_fork && (tsk->state & TASK_NEW))
 #else
 		if (!is_fork && (tsk->__state & TASK_NEW))
 #endif
 			is_fork = 1;
 #endif /* TASK_NEW */
-		set_task_creds_tcnt(tsk, is_fork?1:-1);
+		set_task_creds_tcnt(tsk, is_fork ? 1 : -1);
 	}
 
 #ifdef DEFEX_CACHES_ENABLE
-	defex_file_cache_delete(tsk->pid);
+	defex_file_cache_find(tsk->pid, true);
 #endif /* DEFEX_CACHES_ENABLE */
 	return 0;
 }
 
-static unsigned int rules_load_cnt = 0;
 int task_defex_user_exec(const char *new_file)
 {
 #ifdef DEFEX_UMH_RESTRICTION_ENABLE
-	int res = DEFEX_DENY, is_violation = DEFEX_DENY;
+	int res = DEFEX_ALLOW, is_violation;
 	struct file *fp = NULL;
+	static unsigned int rules_load_cnt;
 
-	if (boot_state_unlocked)
+	if (is_boot_state_unlocked())
 		return DEFEX_ALLOW;
 
 	if (!check_rules_ready()) {
 		if (rules_load_cnt++%100 == 0)
-			printk("[DEFEX] Rules not ready\n");
+			defex_log_warn("Rules not ready");
 		goto umh_out;
 	}
 
-	if (current == NULL || current->fs == NULL) {
+	if (current == NULL || current->fs == NULL)
 		goto umh_out;
-	}
 
 	fp = local_fopen(new_file, O_RDONLY, 0);
 	if (IS_ERR(fp) || (fp == NULL)) {
+		res = DEFEX_DENY;
 		goto umh_out;
 	} else {
 		filp_close(fp, NULL);
 	}
 
-	is_violation = !rules_lookup(new_file, feature_umhbin_path, NULL);
+	is_violation = !rules_lookup(new_file, feature_umhbin_path, NULL, NULL, 0);
 	if (is_violation) {
-		printk("[DEFEX] UMH Exec Denied: %s\n", new_file);
+		defex_log_warn("UMH Exec Denied: %s", new_file);
+		res = DEFEX_DENY;
 		goto umh_out;
 	}
 
-	res = DEFEX_ALLOW;
 umh_out:
 	return res;
 #else

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * PROCA identity
  *
@@ -15,14 +16,16 @@
  * GNU General Public License for more details.
  */
 
-#include "proca_identity.h"
-#include "proca_certificate.h"
 #include <linux/slab.h>
 #include <linux/fs.h>
 #include <linux/string.h>
 
+#include "proca_identity.h"
+#include "proca_certificate.h"
+#include "proca_log.h"
+
 int init_proca_identity(struct proca_identity *identity, struct file *file,
-			char *xattr_value, const size_t xattr_size,
+			char **cert_value, const size_t cert_size,
 			struct proca_certificate *parsed_cert)
 {
 	int rc = 0;
@@ -32,8 +35,12 @@ int init_proca_identity(struct proca_identity *identity, struct file *file,
 
 	get_file(file);
 	identity->file = file;
-	identity->certificate = xattr_value;
-	identity->certificate_size = xattr_size;
+	identity->certificate_size = cert_size;
+	identity->certificate = NULL;
+	if (cert_value) {
+		identity->certificate = *cert_value;
+		*cert_value = NULL;
+	}
 
 	if (parsed_cert)
 		identity->parsed_cert = *parsed_cert;
@@ -48,7 +55,7 @@ int proca_identity_copy(struct proca_identity *dst, struct proca_identity *src)
 {
 	int rc = 0;
 
-	BUG_ON(!dst || !src);
+	PROCA_BUG_ON(!dst || !src);
 
 	memset(dst, 0, sizeof(*dst));
 
@@ -88,3 +95,8 @@ void deinit_proca_identity(struct proca_identity *identity)
 		fput(identity->file);
 	kfree(identity->certificate);
 }
+
+#if defined(CONFIG_SEC_KUNIT)
+EXPORT_SYMBOL_GPL(proca_identity_copy);
+EXPORT_SYMBOL_GPL(init_proca_identity);
+#endif

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Task Integrity Verifier
  *
@@ -149,6 +150,8 @@ int task_integrity_copy(struct task_integrity *from, struct task_integrity *to)
 	return rc;
 }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wignored-qualifiers"
 char const * const tint_reset_cause_to_string(
 	enum task_integrity_reset_cause cause)
 {
@@ -180,6 +183,7 @@ char const * const tint_reset_cause_to_string(
 
 	return tint_cause2str[cause];
 }
+#pragma GCC diagnostic pop
 
 /*
  * task_integrity_set_reset_reason
@@ -199,3 +203,13 @@ void task_integrity_set_reset_reason(struct task_integrity *intg,
 		intg->reset_file = file;
 	}
 }
+
+#if defined(CONFIG_SEC_KUNIT)
+EXPORT_SYMBOL_GPL(tint_reset_cause_to_string);
+EXPORT_SYMBOL_GPL(task_integrity_set_reset_reason);
+EXPORT_SYMBOL_GPL(task_integrity_free);
+EXPORT_SYMBOL_GPL(task_integrity_copy);
+EXPORT_SYMBOL_GPL(task_integrity_clear);
+EXPORT_SYMBOL_GPL(init_once);
+EXPORT_SYMBOL_GPL(copy_label);
+#endif

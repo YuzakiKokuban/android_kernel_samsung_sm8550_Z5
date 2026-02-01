@@ -1001,10 +1001,12 @@ int mmc_select_bus_width(struct mmc_card *card)
 	static unsigned ext_csd_bits[] = {
 		EXT_CSD_BUS_WIDTH_8,
 		EXT_CSD_BUS_WIDTH_4,
+		EXT_CSD_BUS_WIDTH_1,
 	};
 	static unsigned bus_widths[] = {
 		MMC_BUS_WIDTH_8,
 		MMC_BUS_WIDTH_4,
+		MMC_BUS_WIDTH_1,
 	};
 	struct mmc_host *host = card->host;
 	unsigned idx, bus_width = 0;
@@ -1769,6 +1771,7 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 	}
 
 	trace_android_vh_mmc_update_partition_status(card);
+	trace_android_rvh_mmc_partition_status(card);
 
 	/*
 	 * Enable power_off_notification byte in the ext_csd register

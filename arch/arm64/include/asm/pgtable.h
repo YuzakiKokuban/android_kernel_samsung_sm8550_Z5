@@ -13,9 +13,6 @@
 #include <asm/pgtable-hwdef.h>
 #include <asm/pgtable-prot.h>
 #include <asm/tlbflush.h>
-#ifdef CONFIG_RKP
-#include <linux/rkp.h>
-#endif
 
 /*
  * VMALLOC range.
@@ -778,6 +775,12 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 	if (pte_hw_dirty(pte))
 		pte = pte_mkdirty(pte);
 	pte_val(pte) = (pte_val(pte) & ~mask) | (pgprot_val(newprot) & mask);
+	/*
+	 * If we end up clearing hw dirtiness for a sw-dirty PTE, set hardware
+	 * dirtiness again.
+	 */
+	if (pte_sw_dirty(pte))
+		pte = pte_mkdirty(pte);
 	return pte;
 }
 
@@ -872,16 +875,8 @@ static inline int pmdp_test_and_clear_young(struct vm_area_struct *vma,
 static inline pte_t ptep_get_and_clear(struct mm_struct *mm,
 				       unsigned long address, pte_t *ptep)
 {
-#ifdef CONFIG_RKP
-	pte_t old = __pte(pte_val(*ptep));
-	pte_t zero_pte;
-
-	pte_val(zero_pte) = 0;
-	set_pte(ptep, zero_pte);
-	return old;
-#else
+	READ_ONCE(*ptep);
 	return __pte(xchg_relaxed(&pte_val(*ptep), 0));
-#endif
 }
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE

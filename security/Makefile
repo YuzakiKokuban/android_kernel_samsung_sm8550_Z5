@@ -31,6 +31,9 @@ obj-$(CONFIG_SECURITY_LANDLOCK)		+= landlock/
 obj-$(CONFIG_INTEGRITY)			+= integrity/
 obj-$(CONFIG_SECURITY_DSMS)		+= samsung/dsms/
 
+# KNOX ZT
+obj-$(CONFIG_KZT) += kzt/
+
 # KNOX DAR
 obj-$(CONFIG_DDAR) += ddar/
 obj-$(CONFIG_DDAR) += ddar/built-in.a

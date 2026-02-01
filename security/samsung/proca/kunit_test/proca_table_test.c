@@ -1,3 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2020 Samsung Electronics Co., Ltd. All Rights Reserved
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2
+ * as published by the Free Software Foundation.
+ */
+
 #include "proca_table.h"
 #include "test_helpers.h"
 #include "proca_test_certificate.h"
@@ -18,10 +27,12 @@ static void proca_table_get_by_task_test(struct kunit *test)
 	DECLARE_NEW(test, struct proca_task_descr, descr_put);
 	DECLARE_NEW(test, struct proca_task_descr, descr_get);
 	DECLARE_NEW(test, struct file, p_file);
+	DECLARE_NEW(test, char, cert_val);
 	struct proca_certificate parsed_cert;
 	int rc;
 
 	descr_put->task = current;
+	memcpy(cert_val, "test", sizeof("test"));
 
 	rc = init_certificate_validation_hash();
 	KUNIT_EXPECT_EQ(test, rc, 0);
@@ -30,7 +41,7 @@ static void proca_table_get_by_task_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, rc, 0);
 
 	rc = init_proca_identity(&descr_put->proca_identity, p_file,
-				 "test", sizeof("test"), &parsed_cert);
+				 &cert_val, sizeof(cert_val), &parsed_cert);
 	KUNIT_EXPECT_EQ(test, rc, 0);
 
 	proca_table_init(pt);
@@ -94,5 +105,6 @@ static struct kunit_suite proca_table_test = {
 	.exit = proca_table_test_exit,
 	.test_cases = security_proca_table_test_cases,
 };
-
 kunit_test_suites(&proca_table_test);
+
+MODULE_LICENSE("GPL v2");

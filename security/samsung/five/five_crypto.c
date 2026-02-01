@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * This code is based on IMA's code
  *
@@ -34,6 +35,7 @@
 #include "five_crypto_comp.h"
 #include "five_porting.h"
 #include "security/integrity/integrity.h"
+#include "five_testing.h"
 
 struct ahash_completion {
 	struct completion completion;
@@ -48,6 +50,12 @@ MODULE_PARM_DESC(ahash_minsize, "Minimum file size for ahash use");
 /* default is 0 - 1 page. */
 static int five_maxorder;
 static unsigned long five_bufsize = PAGE_SIZE;
+
+__visible_for_testing __mockable struct crypto_shash *call_crypto_alloc_shash(
+		const char *alg_name, u32 type, u32 mask)
+{
+	return crypto_alloc_shash(alg_name, type, mask);
+}
 
 static int param_set_bufsize(const char *val, const struct kernel_param *kp)
 {
@@ -80,7 +88,7 @@ int __init five_init_crypto(void)
 {
 	long rc;
 
-	five_shash_tfm = crypto_alloc_shash(
+	five_shash_tfm = call_crypto_alloc_shash(
 					hash_algo_name[five_hash_algo], 0, 0);
 	if (IS_ERR(five_shash_tfm)) {
 		rc = PTR_ERR(five_shash_tfm);
@@ -228,7 +236,7 @@ static int ahash_wait(int err, struct ahash_completion *res)
 		wait_for_completion(&res->completion);
 		reinit_completion(&res->completion);
 		err = res->err;
-		/* fall through */
+		fallthrough;
 	default:
 		pr_crit_ratelimited("ahash calculation failed: err: %d\n", err);
 	}
@@ -257,7 +265,7 @@ static int five_calc_file_hash_atfm(struct file *file,
 		return -ENOMEM;
 
 	init_completion(&res.completion);
-	ahash_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG |
+	do_ahash_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG |
 				   CRYPTO_TFM_REQ_MAY_SLEEP,
 				   ahash_complete, &res);
 
@@ -536,3 +544,8 @@ int five_calc_data_hash(const uint8_t *data, size_t data_len,
 {
 	return five_calc_data_shash(data, data_len, hash_algo, hash, hash_len);
 }
+
+#if defined(CONFIG_SEC_KUNIT)
+EXPORT_SYMBOL_GPL(five_calc_file_hash);
+EXPORT_SYMBOL_GPL(five_calc_data_hash);
+#endif
